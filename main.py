@@ -147,13 +147,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         intro = (
         "🚪 *Bienvenue dans le groupe privé*\n\n"
-        "Ici, vous êtes les bienvenus si vous avez du contenu à partager.\n\n"
-        "✅ Vous êtes les bienvenus si :\n"
-        "- vous avez du contenu amateur qui n’a jamais tourné ;\n"
-        "- vous avez du contenu MYM / OnlyFans que vous avez acheté vous-même "
-        "et que vous n’avez jamais partagé.\n\n"
+        "Vous êtes les bienvenus si vous en avez marre des groupes "
+        "qui proposent toujours le même contenu.\n\n"
+        "🔥 Ici, place à l’exclusivité.\n"
+        "Du contenu proposé par vous, pour vous.\n\n"
+        "✅ Contenu amateur jamais vu\n"
+        "✅ Contenu rare et non repartagé partout\n"
+        "✅ Une vraie sélection, pas du contenu recyclé\n\n"
         "⚠️ Toutes les autres demandes ne seront pas acceptées."
-        )
+        )    
 
     try:
         msg = await update.message.reply_photo(
@@ -271,7 +273,7 @@ async def user_flow_callback(update, context, db, user, data):
         db.commit()
 
         text = (
-            "🚪 *Bienvenue dans le groupe privé!!!!*\n\n"
+            "🚪 *Bienvenue dans le groupe privé*\n\n"
             "Ici, vous êtes les bienvenus si vous avez du contenu à partager.\n\n"
             "✅ Vous êtes les bienvenus si :\n"
             "- vous avez du contenu amateur qui n’a jamais tourné ;\n"
