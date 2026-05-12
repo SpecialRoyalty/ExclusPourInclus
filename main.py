@@ -268,15 +268,15 @@ async def user_flow_callback(update, context, db, user, data):
         user.state = "category"
         db.commit()
 
-    text = (
-        "🚪 *Bienvenue dans le groupe privé*\n\n"
-        "Ici, vous êtes les bienvenus si vous avez du contenu à partager.\n\n"
-        "✅ Vous êtes les bienvenus si :\n"
-        "- vous avez du contenu amateur qui n’a jamais tourné ;\n"
-        "- vous avez du contenu MYM / OnlyFans que vous avez acheté vous-même "
-        "et que vous n’avez jamais partagé.\n\n"
-        "⚠️ Toutes les autres demandes ne seront pas acceptées."
-        )
+        text = (
+            "🚪 *Bienvenue dans le groupe privé*\n\n"
+            "Ici, vous êtes les bienvenus si vous avez du contenu à partager.\n\n"
+            "✅ Vous êtes les bienvenus si :\n"
+            "- vous avez du contenu amateur qui n’a jamais tourné ;\n"
+            "- vous avez du contenu MYM / OnlyFans que vous avez acheté vous-même "
+            "et que vous n’avez jamais partagé.\n\n"
+            "⚠️ Toutes les autres demandes ne seront pas acceptées."
+            )
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Créé par moi-même ou mes proches (amateur)", callback_data="cat:creator")],
