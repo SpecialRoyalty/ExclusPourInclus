@@ -145,13 +145,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         warning = ""
 
-    intro = (
-        warning +
-        "🚪 *Liste d’attente privée*\n\n"
-        "Tu veux accéder à un groupe plus sélectif, où chaque personne doit réellement apporter de la valeur ?\n\n"
-        "Avant de continuer, tu vas passer une courte vérification.\n\n"
-        "⚠️ Une seule demande est autorisée par compte Telegram. En cas de refus, une seconde demande est possible."
-    )
+        intro = (
+        "🚪 *Bienvenue dans le groupe privé*\n\n"
+        "Ici, vous êtes les bienvenus si vous avez du contenu à partager.\n\n"
+        "✅ Vous êtes les bienvenus si :\n"
+        "- vous avez du contenu amateur qui n’a jamais tourné ;\n"
+        "- vous avez du contenu MYM / OnlyFans que vous avez acheté vous-même "
+        "et que vous n’avez jamais partagé.\n\n"
+        "⚠️ Toutes les autres demandes ne seront pas acceptées."
+        )
 
     try:
         msg = await update.message.reply_photo(
