@@ -271,7 +271,7 @@ async def user_flow_callback(update, context, db, user, data):
         db.commit()
 
         text = (
-            "🚪 *Bienvenue dans le groupe privé*\n\n"
+            "🚪 *Bienvenue dans le groupe privé!!!!*\n\n"
             "Ici, vous êtes les bienvenus si vous avez du contenu à partager.\n\n"
             "✅ Vous êtes les bienvenus si :\n"
             "- vous avez du contenu amateur qui n’a jamais tourné ;\n"
