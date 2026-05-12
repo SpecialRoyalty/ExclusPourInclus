@@ -254,7 +254,7 @@ async def user_flow_callback(update, context, db, user, data):
             ]
         ])
 
-        await reply("Habitez-vous en France ?", keyboard)
+        await reply("Habites tu en France ?", keyboard)
         return
 
     if data == "france:no":
