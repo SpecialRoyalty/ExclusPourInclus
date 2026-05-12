@@ -110,7 +110,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     intro = (
-        "🚪 *Bienvenue dans le groupe privé*\n\n"
+        "🚪 *Bienvenue aux Inclus*\n\n"
         "Ici, vous êtes les bienvenus si vous avez du contenu à partager.\n\n"
         "✅ Vous êtes les bienvenus si :\n"
         "- vous avez du contenu amateur qui n’a jamais tourné ;\n"
