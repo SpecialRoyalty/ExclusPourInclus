@@ -17,6 +17,7 @@ FRUITS = [
     {"name": "Noix de coco", "emoji": "🥥"},
 ]
 
+
 def build_captcha():
     # Fruit correct
     correct = random.choice(FRUITS)
@@ -36,9 +37,11 @@ def build_captcha():
 
     # Construction du clavier
     for fruit in choices:
+
+        # UNIQUEMENT L'EMOJI
         row.append(
             InlineKeyboardButton(
-                f'{fruit["emoji"]} {fruit["name"]}',
+                fruit["emoji"],
                 callback_data=f'captcha:{fruit["name"]}'
             )
         )
@@ -48,7 +51,6 @@ def build_captcha():
             rows.append(row)
             row = []
 
-    # Dernière ligne
     if row:
         rows.append(row)
 
