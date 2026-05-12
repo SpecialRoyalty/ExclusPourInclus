@@ -804,12 +804,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.state = "waiting_proof"
             db.commit()
 
-            await send_and_remember(
-                update, context, db,
-                "Parfait. Envoyez maintenant une preuve en photo ou vidéo.\n\n"
-                "Votre demande sera examinée manuellement par les admins."
-            )
-            return
+        await send_and_remember(
+        update,
+        context,
+        db,
+        "Parfait. Envoyez maintenant une preuve en photo ou vidéo.\n\n"
+        "⚠️ Votre demande sera examinée automatiquement par nos algorithmes, "
+        "notre IA, nos bases de données et les comparaisons effectuées sur internet.\n\n"
+        "Tout média non conforme sera refusé et vous serez banni du groupe "
+        "sans possibilité de revenir en arrière."
+        )
+        return
 
         if user.state == "bought_name":
             db.add(Application(
