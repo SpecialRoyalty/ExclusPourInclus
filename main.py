@@ -222,7 +222,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Je n’ai aucun contenu exclusif", callback_data="cat:none")],
         ])
 
-        await reply("Possédez-vous du contenu exclusif ou un accès vérifiable ?", keyboard)
+        await reply("Possédez-vous du contenu exclusif ou du contenu MYM/ONLYFANS ?", keyboard)
 
     elif data == "cat:none":
         keyboard = InlineKeyboardMarkup([
