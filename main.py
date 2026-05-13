@@ -1,4 +1,3 @@
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
@@ -282,11 +281,11 @@ async def user_flow_callback(update, context, db, user, data):
             "- vous avez du contenu MYM / OnlyFans que vous avez acheté vous-même "
             "et que vous n’avez jamais partagé.\n\n"
             "⚠️ Toutes les autres demandes ne seront pas acceptées."
-            )
+        )
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Créé par moi-même ou mes proches (amateur)", callback_data="cat:creator")],
-            [InlineKeyboardButton("Acheté sur les plateformes MYM/Onlyfans", callback_data="cat:bought")],
+            [InlineKeyboardButton("Acheté sur les plateformes MYM/OnlyFans", callback_data="cat:bought")],
             [InlineKeyboardButton("Je ne possède aucun contenu exclusif", callback_data="cat:none")]
         ])
 
@@ -348,7 +347,7 @@ async def user_flow_callback(update, context, db, user, data):
         ])
 
         await reply(
-            "Êtes-vous certain que ce contenu n’est pas déjà largement diffusé sur Telegram, Discord,Leakmedia ou d’autres plateformes publiques ?",
+            "Êtes-vous certain que ce contenu n’est pas déjà largement diffusé sur Telegram, Discord, Leakmedia ou d’autres plateformes publiques ?",
             keyboard
         )
         return
@@ -586,7 +585,7 @@ async def reject_application(context, db, target, app, admin_id, reason):
             "❌ Votre demande a été refusée.\n\n"
             f"Motif : {reason}\n\n"
             "Vous pouvez faire une dernière demande classique avec /start. "
-            "Attention : si elle est refusée,c'est terminé."
+            "Attention : si elle est refusée, c'est terminé."
         )
 
     db.commit()
@@ -806,17 +805,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.state = "waiting_proof"
             db.commit()
 
-        await send_and_remember(
-        update,
-        context,
-        db,
-        "Parfait. Envoyez maintenant une preuve en photo ou vidéo.\n\n"
-        "⚠️ Votre demande sera examinée automatiquement par nos algorithmes, "
-        "notre IA, nos bases de données et les comparaisons effectuées sur internet.\n\n"
-        "Tout média non conforme sera refusé et vous serez banni du groupe "
-        "sans possibilité de revenir en arrière."
-        )
-        return
+            await send_and_remember(
+                update,
+                context,
+                db,
+                "Parfait. Envoyez maintenant une preuve en photo ou vidéo.\n\n"
+                "⚠️ Votre demande sera examinée automatiquement par nos algorithmes, "
+                "notre IA, nos bases de données et les comparaisons effectuées sur internet.\n\n"
+                "Tout média non conforme sera refusé."
+            )
+            return
 
         if user.state == "bought_name":
             db.add(Application(
@@ -830,17 +828,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.state = "waiting_proof"
             db.commit()
 
-        await send_and_remember(
-        update,
-        context,
-        db,
-        "Parfait. Envoyez maintenant une preuve en photo ou vidéo.\n\n"
-        "⚠️ Votre demande sera examinée automatiquement par nos algorithmes, "
-        "notre IA, nos bases de données et les comparaisons effectuées sur internet.\n\n"
-        "Tout média non conforme sera refusé et vous serez banni du groupe "
-        "sans possibilité de revenir en arrière."
-        )
-        return
+            await send_and_remember(
+                update,
+                context,
+                db,
+                "Parfait. Envoyez maintenant une preuve en photo ou vidéo.\n\n"
+                "⚠️ Votre demande sera examinée automatiquement par nos algorithmes, "
+                "notre IA, nos bases de données et les comparaisons effectuées sur internet.\n\n"
+                "Tout média non conforme sera refusé."
+            )
+            return
 
     finally:
         db.close()
@@ -942,7 +939,8 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await send_and_remember(
             update, context, db,
-            "Nos bots utilisent l’IA, nos bases de données et des bases de données publiques,pour vérifier si vos médias n’ont pas déjà été publiés sur le web."
+            "Nos bots utilisent l’IA, nos bases de données et des bases de données publiques, "
+            "pour vérifier si vos médias n’ont pas déjà été publiés sur le web."
         )
 
     finally:
