@@ -1,4 +1,5 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import Forbidden, BadRequest
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ChatMemberHandler, ContextTypes, filters
@@ -47,6 +48,79 @@ def remember_bot_message(db, telegram_id, chat_id, message_id):
     db.commit()
 
 
+async def safe_reply_text(message, text, reply_markup=None, parse_mode=None):
+    try:
+        return await message.reply_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except (Forbidden, BadRequest):
+        return None
+
+
+async def safe_reply_photo(message, photo, caption=None, reply_markup=None, parse_mode=None):
+    try:
+        return await message.reply_photo(
+            photo=photo,
+            caption=caption,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except (Forbidden, BadRequest):
+        return None
+
+
+async def safe_reply_video(message, video, caption=None, reply_markup=None, parse_mode=None):
+    try:
+        return await message.reply_video(
+            video=video,
+            caption=caption,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except (Forbidden, BadRequest):
+        return None
+
+
+async def safe_send_message(bot, chat_id, text, reply_markup=None, parse_mode=None):
+    try:
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except (Forbidden, BadRequest):
+        return None
+
+
+async def safe_send_photo(bot, chat_id, photo, caption=None, reply_markup=None, parse_mode=None):
+    try:
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            caption=caption,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except (Forbidden, BadRequest):
+        return None
+
+
+async def safe_send_video(bot, chat_id, video, caption=None, reply_markup=None, parse_mode=None):
+    try:
+        return await bot.send_video(
+            chat_id=chat_id,
+            video=video,
+            caption=caption,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except (Forbidden, BadRequest):
+        return None
+
+
 async def delete_old_bot_messages(context, db, telegram_id):
     messages = db.query(BotMessage).filter(BotMessage.telegram_id == telegram_id).all()
 
@@ -62,11 +136,20 @@ async def delete_old_bot_messages(context, db, telegram_id):
 
 
 async def send_and_remember(update, context, db, text, reply_markup=None, parse_mode=None):
-    message = await update.effective_message.reply_text(
+    message = await safe_reply_text(
+        update.effective_message,
         text,
         reply_markup=reply_markup,
         parse_mode=parse_mode
     )
+
+    if not message:
+        user = db.query(User).filter(User.telegram_id == update.effective_user.id).first()
+        if user:
+            user.blocked = True
+            user.state = "blocked"
+            db.commit()
+        return None
 
     remember_bot_message(
         db,
@@ -87,7 +170,8 @@ async def send_vip_question_from_query(query, db, user, reason_text=None):
     if reason_text:
         prefix = reason_text + "\n\n"
 
-    await query.message.reply_text(
+    await safe_reply_text(
+        query.message,
         prefix + "Possédez-vous un VIP Telegram que vous avez payé ?",
         reply_markup=vip_question_keyboard()
     )
@@ -99,7 +183,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_or_create_user(db, tg_user)
 
     if is_admin(tg_user.id):
-        await update.message.reply_text(
+        await safe_reply_text(
+            update.message,
             "👑 Panel Admin",
             reply_markup=admin_main_keyboard()
         )
@@ -158,15 +243,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚠️ Toutes les autres demandes ne seront pas acceptées."
     )
 
-    try:
-        msg = await update.message.reply_photo(
-            photo=WELCOME_IMAGE_URL,
-            caption=intro,
-            parse_mode="Markdown"
-        )
+    msg = await safe_reply_photo(
+        update.message,
+        photo=WELCOME_IMAGE_URL,
+        caption=intro,
+        parse_mode="Markdown"
+    )
+
+    if msg:
         remember_bot_message(db, tg_user.id, update.effective_chat.id, msg.message_id)
-    except Exception:
-        await send_and_remember(update, context, db, intro, parse_mode="Markdown")
+    else:
+        result = await send_and_remember(update, context, db, intro, parse_mode="Markdown")
+        if result is None:
+            db.close()
+            return
 
     answer, keyboard = build_captcha()
     user.captcha_answer = answer
@@ -189,8 +279,10 @@ async def user_flow_callback(update, context, db, user, data):
     tg_user = query.from_user
 
     async def reply(text, keyboard=None):
-        msg = await query.message.reply_text(text, reply_markup=keyboard)
-        remember_bot_message(db, tg_user.id, query.message.chat_id, msg.message_id)
+        msg = await safe_reply_text(query.message, text, reply_markup=keyboard)
+        if msg:
+            remember_bot_message(db, tg_user.id, query.message.chat_id, msg.message_id)
+        return msg
 
     if user.blocked:
         await reply("⛔ Accès bloqué.")
@@ -375,36 +467,36 @@ async def admin_callback(update, context, db, user, data):
     admin_id = query.from_user.id
 
     if not is_admin(admin_id):
-        await query.message.reply_text("Commande réservée aux admins.")
+        await safe_reply_text(query.message, "Commande réservée aux admins.")
         return
 
     if data == "admin:home":
-        await query.message.reply_text("👑 Panel Admin", reply_markup=admin_main_keyboard())
+        await safe_reply_text(query.message, "👑 Panel Admin", reply_markup=admin_main_keyboard())
         return
 
     if data == "admin:ads":
-        await query.message.reply_text("📢 Menu publicités", reply_markup=ad_menu_keyboard())
+        await safe_reply_text(query.message, "📢 Menu publicités", reply_markup=ad_menu_keyboard())
         return
 
     if data == "admin:groups":
         groups = db.query(Group).filter(Group.active == True).order_by(Group.id.asc()).all()
 
         if not groups:
-            await query.message.reply_text("Aucun groupe connecté.", reply_markup=back_admin_keyboard())
+            await safe_reply_text(query.message, "Aucun groupe connecté.", reply_markup=back_admin_keyboard())
             return
 
         text = "👥 Groupes connectés :\n\n"
         for g in groups:
             text += f"{g.id}. {g.title or 'Sans titre'}\nID : {g.chat_id}\nStatut : actif\n\n"
 
-        await query.message.reply_text(text[:3900], reply_markup=back_admin_keyboard())
+        await safe_reply_text(query.message, text[:3900], reply_markup=back_admin_keyboard())
         return
 
     if data == "admin:waitlists":
         apps = db.query(Application).filter(Application.status == "accepted").order_by(Application.category.asc()).all()
 
         if not apps:
-            await query.message.reply_text("Aucune personne validée.", reply_markup=back_admin_keyboard())
+            await safe_reply_text(query.message, "Aucune personne validée.", reply_markup=back_admin_keyboard())
             return
 
         text = "✅ Listes d’attente :\n\n"
@@ -412,14 +504,14 @@ async def admin_callback(update, context, db, user, data):
             username = f"@{app.username}" if app.username else str(app.telegram_id)
             text += f"- {username} | {app.category} | {app.creator_name or ''}\n"
 
-        await query.message.reply_text(text[:3900], reply_markup=back_admin_keyboard())
+        await safe_reply_text(query.message, text[:3900], reply_markup=back_admin_keyboard())
         return
 
     if data == "admin:pending":
         pending = db.query(Application).filter(Application.status == "pending").order_by(Application.id.asc()).first()
 
         if not pending:
-            await query.message.reply_text("Aucune demande en attente.", reply_markup=back_admin_keyboard())
+            await safe_reply_text(query.message, "Aucune demande en attente.", reply_markup=back_admin_keyboard())
             return
 
         text = (
@@ -433,20 +525,21 @@ async def admin_callback(update, context, db, user, data):
 
         keyboard = application_review_keyboard(pending.telegram_id)
 
-        try:
-            if pending.proof_type == "photo":
-                await query.message.reply_photo(pending.proof_file_id, caption=text, reply_markup=keyboard)
-            elif pending.proof_type == "video":
-                await query.message.reply_video(pending.proof_file_id, caption=text, reply_markup=keyboard)
-            else:
-                await query.message.reply_text(text, reply_markup=keyboard)
-        except Exception:
-            await query.message.reply_text(text, reply_markup=keyboard)
+        if pending.proof_type == "photo":
+            sent = await safe_reply_photo(query.message, pending.proof_file_id, caption=text, reply_markup=keyboard)
+            if not sent:
+                await safe_reply_text(query.message, text, reply_markup=keyboard)
+        elif pending.proof_type == "video":
+            sent = await safe_reply_video(query.message, pending.proof_file_id, caption=text, reply_markup=keyboard)
+            if not sent:
+                await safe_reply_text(query.message, text, reply_markup=keyboard)
+        else:
+            await safe_reply_text(query.message, text, reply_markup=keyboard)
 
         return
 
     if data == "admin:broadcast":
-        await query.message.reply_text("📣 Choisissez une liste :", reply_markup=broadcast_menu_keyboard())
+        await safe_reply_text(query.message, "📣 Choisissez une liste :", reply_markup=broadcast_menu_keyboard())
         return
 
 
@@ -455,34 +548,34 @@ async def ad_callback(update, context, db, user, data):
     admin_id = query.from_user.id
 
     if not is_admin(admin_id):
-        await query.message.reply_text("Commande réservée aux admins.")
+        await safe_reply_text(query.message, "Commande réservée aux admins.")
         return
 
     if data == "ad:create":
         user.state = "admin_waiting_ad_image"
         db.commit()
-        await query.message.reply_text("Envoyez maintenant l’image de la publicité.")
+        await safe_reply_text(query.message, "Envoyez maintenant l’image de la publicité.")
         return
 
     if data == "ad:list":
         ads = db.query(Advertisement).order_by(Advertisement.id.desc()).limit(10).all()
 
         if not ads:
-            await query.message.reply_text("Aucune publicité enregistrée.", reply_markup=ad_menu_keyboard())
+            await safe_reply_text(query.message, "Aucune publicité enregistrée.", reply_markup=ad_menu_keyboard())
             return
 
         text = "📂 Publicités enregistrées :\n\n"
         for ad in ads:
             text += f"Pub #{ad.id}\n{ad.caption[:120]}\n\n"
 
-        await query.message.reply_text(text[:3900], reply_markup=ad_menu_keyboard())
+        await safe_reply_text(query.message, text[:3900], reply_markup=ad_menu_keyboard())
         return
 
     if data == "ad:publish":
         groups = db.query(Group).filter(Group.active == True).order_by(Group.id.asc()).all()
 
         if not groups:
-            await query.message.reply_text("Aucun groupe connecté.", reply_markup=ad_menu_keyboard())
+            await safe_reply_text(query.message, "Aucun groupe connecté.", reply_markup=ad_menu_keyboard())
             return
 
         rows = [
@@ -491,7 +584,8 @@ async def ad_callback(update, context, db, user, data):
         ]
         rows.append([InlineKeyboardButton("⬅️ Retour", callback_data="admin:ads")])
 
-        await query.message.reply_text(
+        await safe_reply_text(
+            query.message,
             "Choisissez le groupe où publier :",
             reply_markup=InlineKeyboardMarkup(rows)
         )
@@ -502,7 +596,8 @@ async def ad_callback(update, context, db, user, data):
         ads = db.query(Advertisement).order_by(Advertisement.id.desc()).limit(20).all()
 
         if not ads:
-            await query.message.reply_text(
+            await safe_reply_text(
+                query.message,
                 "Aucune publicité enregistrée. Créez d’abord une publicité.",
                 reply_markup=ad_menu_keyboard()
             )
@@ -514,7 +609,8 @@ async def ad_callback(update, context, db, user, data):
         ]
         rows.append([InlineKeyboardButton("⬅️ Retour", callback_data="ad:publish")])
 
-        await query.message.reply_text(
+        await safe_reply_text(
+            query.message,
             "Choisissez la publicité à envoyer :",
             reply_markup=InlineKeyboardMarkup(rows)
         )
@@ -526,30 +622,32 @@ async def ad_callback(update, context, db, user, data):
         ad = db.query(Advertisement).filter(Advertisement.id == int(ad_id)).first()
 
         if not group or not ad:
-            await query.message.reply_text("Groupe ou publicité introuvable.", reply_markup=ad_menu_keyboard())
+            await safe_reply_text(query.message, "Groupe ou publicité introuvable.", reply_markup=ad_menu_keyboard())
             return
 
         bot_username = (await context.bot.get_me()).username
         keyboard = join_waitlist_keyboard(bot_username)
 
-        try:
-            if ad.image_file_id:
-                await context.bot.send_photo(
-                    chat_id=group.chat_id,
-                    photo=ad.image_file_id,
-                    caption=ad.caption,
-                    reply_markup=keyboard
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=group.chat_id,
-                    text=ad.caption,
-                    reply_markup=keyboard
-                )
+        if ad.image_file_id:
+            sent = await safe_send_photo(
+                context.bot,
+                chat_id=group.chat_id,
+                photo=ad.image_file_id,
+                caption=ad.caption,
+                reply_markup=keyboard
+            )
+        else:
+            sent = await safe_send_message(
+                context.bot,
+                chat_id=group.chat_id,
+                text=ad.caption,
+                reply_markup=keyboard
+            )
 
-            await query.message.reply_text("✅ Publicité publiée dans le groupe.", reply_markup=ad_menu_keyboard())
-        except Exception as e:
-            await query.message.reply_text(f"Erreur publication : {e}", reply_markup=ad_menu_keyboard())
+        if sent:
+            await safe_reply_text(query.message, "✅ Publicité publiée dans le groupe.", reply_markup=ad_menu_keyboard())
+        else:
+            await safe_reply_text(query.message, "Erreur publication : impossible d’envoyer dans ce groupe.", reply_markup=ad_menu_keyboard())
 
         return
 
@@ -589,11 +687,7 @@ async def reject_application(context, db, target, app, admin_id, reason):
         )
 
     db.commit()
-
-    try:
-        await context.bot.send_message(chat_id=target.telegram_id, text=message)
-    except Exception:
-        pass
+    await safe_send_message(context.bot, target.telegram_id, message)
 
 
 async def review_callback(update, context, db, user, data):
@@ -601,7 +695,7 @@ async def review_callback(update, context, db, user, data):
     admin_id = query.from_user.id
 
     if not is_admin(admin_id):
-        await query.message.reply_text("Commande réservée aux admins.")
+        await safe_reply_text(query.message, "Commande réservée aux admins.")
         return
 
     parts = data.split(":")
@@ -618,7 +712,7 @@ async def review_callback(update, context, db, user, data):
     )
 
     if not target or not app:
-        await query.message.reply_text("Demande introuvable.")
+        await safe_reply_text(query.message, "Demande introuvable.")
         return
 
     if action == "approve":
@@ -631,23 +725,24 @@ async def review_callback(update, context, db, user, data):
 
         db.commit()
 
-        await context.bot.send_message(
+        await safe_send_message(
+            context.bot,
             chat_id=target_id,
             text="✅ Votre demande a été acceptée. Vous êtes sur la liste d’attente."
         )
 
-        await query.message.reply_text("Utilisateur validé.", reply_markup=back_admin_keyboard())
+        await safe_reply_text(query.message, "Utilisateur validé.", reply_markup=back_admin_keyboard())
         return
 
     if action == "reject":
         await reject_application(context, db, target, app, admin_id, "Demande refusée par l’équipe.")
-        await query.message.reply_text("Utilisateur refusé.", reply_markup=back_admin_keyboard())
+        await safe_reply_text(query.message, "Utilisateur refusé.", reply_markup=back_admin_keyboard())
         return
 
     if action == "reject_reason":
         user.state = f"admin_waiting_refusal_reason:{target_id}"
         db.commit()
-        await query.message.reply_text("Écrivez maintenant le motif du refus.")
+        await safe_reply_text(query.message, "Écrivez maintenant le motif du refus.")
         return
 
 
@@ -656,7 +751,7 @@ async def broadcast_callback(update, context, db, user, data):
     admin_id = query.from_user.id
 
     if not is_admin(admin_id):
-        await query.message.reply_text("Commande réservée aux admins.")
+        await safe_reply_text(query.message, "Commande réservée aux admins.")
         return
 
     if data.startswith("broadcast:target:"):
@@ -664,7 +759,7 @@ async def broadcast_callback(update, context, db, user, data):
         user.state = f"admin_waiting_broadcast:{target}"
         db.commit()
 
-        await query.message.reply_text(f"Écrivez maintenant le message à envoyer à : {target}")
+        await safe_reply_text(query.message, f"Écrivez maintenant le message à envoyer à : {target}")
         return
 
 
@@ -714,9 +809,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await reject_application(context, db, target, app, tg_user.id, text)
                 user.state = "new"
                 db.commit()
-                await update.message.reply_text("Refus envoyé avec motif.", reply_markup=back_admin_keyboard())
+                await safe_reply_text(update.message, "Refus envoyé avec motif.", reply_markup=back_admin_keyboard())
             else:
-                await update.message.reply_text("Demande introuvable.", reply_markup=back_admin_keyboard())
+                await safe_reply_text(update.message, "Demande introuvable.", reply_markup=back_admin_keyboard())
 
             return
 
@@ -730,7 +825,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             if not ad:
-                await update.message.reply_text("Brouillon de publicité introuvable.", reply_markup=ad_menu_keyboard())
+                await safe_reply_text(update.message, "Brouillon de publicité introuvable.", reply_markup=ad_menu_keyboard())
                 return
 
             ad.caption = text
@@ -742,11 +837,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("📢 Menu publicités", callback_data="admin:ads")]
             ])
 
-            await update.message.reply_photo(
+            sent = await safe_reply_photo(
+                update.message,
                 photo=ad.image_file_id,
                 caption=f"Prévisualisation :\n\n{text}",
                 reply_markup=keyboard
             )
+
+            if not sent:
+                await safe_reply_text(update.message, f"Prévisualisation :\n\n{text}", reply_markup=keyboard)
+
             return
 
         if is_admin(tg_user.id) and user.state.startswith("admin_waiting_broadcast:"):
@@ -770,10 +870,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 seen.add(app.telegram_id)
 
-                try:
-                    await context.bot.send_message(chat_id=app.telegram_id, text=text)
+                result = await safe_send_message(context.bot, app.telegram_id, text)
+                if result:
                     sent += 1
-                except Exception:
+                else:
                     failed += 1
 
             db.add(Broadcast(
@@ -787,7 +887,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.state = "new"
             db.commit()
 
-            await update.message.reply_text(
+            await safe_reply_text(
+                update.message,
                 f"📣 Broadcast terminé.\n\nEnvoyés : {sent}\nÉchecs : {failed}",
                 reply_markup=back_admin_keyboard()
             )
@@ -851,7 +952,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if is_admin(tg_user.id) and user.state == "admin_waiting_ad_image":
             if not update.message.photo:
-                await update.message.reply_text("Envoyez une image/photo.")
+                await safe_reply_text(update.message, "Envoyez une image/photo.")
                 return
 
             file_id = update.message.photo[-1].file_id
@@ -865,7 +966,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.state = "admin_waiting_ad_caption"
             db.commit()
 
-            await update.message.reply_text("Image reçue. Envoyez maintenant le texte de la publicité.")
+            await safe_reply_text(update.message, "Image reçue. Envoyez maintenant le texte de la publicité.")
             return
 
         if user.state != "waiting_proof":
@@ -919,23 +1020,22 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         for admin_id in ADMIN_IDS:
-            try:
-                if proof_type == "photo":
-                    await context.bot.send_photo(
-                        chat_id=admin_id,
-                        photo=file_id,
-                        caption=caption,
-                        reply_markup=application_review_keyboard(user.telegram_id)
-                    )
-                else:
-                    await context.bot.send_video(
-                        chat_id=admin_id,
-                        video=file_id,
-                        caption=caption,
-                        reply_markup=application_review_keyboard(user.telegram_id)
-                    )
-            except Exception:
-                pass
+            if proof_type == "photo":
+                await safe_send_photo(
+                    context.bot,
+                    chat_id=admin_id,
+                    photo=file_id,
+                    caption=caption,
+                    reply_markup=application_review_keyboard(user.telegram_id)
+                )
+            else:
+                await safe_send_video(
+                    context.bot,
+                    chat_id=admin_id,
+                    video=file_id,
+                    caption=caption,
+                    reply_markup=application_review_keyboard(user.telegram_id)
+                )
 
         await send_and_remember(
             update, context, db,
@@ -949,10 +1049,10 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Commande réservée aux admins.")
+        await safe_reply_text(update.message, "Commande réservée aux admins.")
         return
 
-    await update.message.reply_text("👑 Panel Admin", reply_markup=admin_main_keyboard())
+    await safe_reply_text(update.message, "👑 Panel Admin", reply_markup=admin_main_keyboard())
 
 
 async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -987,6 +1087,14 @@ async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    # Empêche Railway de spammer des erreurs non gérées.
+    error = context.error
+    if isinstance(error, (Forbidden, BadRequest)):
+        return
+    print(f"Erreur non gérée : {error}")
+
+
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN manquant.")
@@ -1001,6 +1109,7 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, media_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_error_handler(error_handler)
 
     print("Bot V4 lancé.")
     app.run_polling()
