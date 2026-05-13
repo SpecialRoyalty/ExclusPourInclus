@@ -1,5 +1,4 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import Forbidden, BadRequest
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ChatMemberHandler, ContextTypes, filters
@@ -63,36 +62,20 @@ async def delete_old_bot_messages(context, db, telegram_id):
 
 
 async def send_and_remember(update, context, db, text, reply_markup=None, parse_mode=None):
-    try:
-        message = await update.effective_message.reply_text(
-            text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode
-        )
+    message = await update.effective_message.reply_text(
+        text,
+        reply_markup=reply_markup,
+        parse_mode=parse_mode
+    )
 
-        remember_bot_message(
-            db,
-            update.effective_user.id,
-            update.effective_chat.id,
-            message.message_id
-        )
+    remember_bot_message(
+        db,
+        update.effective_user.id,
+        update.effective_chat.id,
+        message.message_id
+    )
 
-        return message
-
-    except Forbidden:
-        user = db.query(User).filter(
-            User.telegram_id == update.effective_user.id
-        ).first()
-
-        if user:
-            user.blocked = True
-            user.state = "blocked"
-            db.commit()
-
-        return None
-
-    except BadRequest:
-        return None
+    return message
 
 
 async def send_vip_question_from_query(query, db, user, reason_text=None):
@@ -181,33 +164,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=intro,
             parse_mode="Markdown"
         )
-
-        remember_bot_message(
-            db,
-            tg_user.id,
-            update.effective_chat.id,
-            msg.message_id
-        )
-
-    except Forbidden:
-        user.blocked = True
-        user.state = "blocked"
-        db.commit()
-        db.close()
-        return
-
+        remember_bot_message(db, tg_user.id, update.effective_chat.id, msg.message_id)
     except Exception:
-        result = await send_and_remember(
-            update,
-            context,
-            db,
-            intro,
-            parse_mode="Markdown"
-        )
-
-        if result is None:
-            db.close()
-            return
+        await send_and_remember(update, context, db, intro, parse_mode="Markdown")
 
     answer, keyboard = build_captcha()
     user.captcha_answer = answer
