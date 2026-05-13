@@ -134,6 +134,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user.state = "vip_question"
         user.category = "vip"
         db.commit()
+
         await send_and_remember(
             update, context, db,
             "⚠️ Vos deux demandes ont été refusées.\n\n"
@@ -145,7 +146,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         warning = ""
 
-        intro = (
+    intro = (
+        warning +
         "🚪 *Bienvenue dans le groupe privé*\n\n"
         "Vous êtes les bienvenus si vous en avez marre des groupes "
         "qui proposent toujours le même contenu.\n\n"
@@ -155,7 +157,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Contenu rare et non repartagé partout\n"
         "✅ Une vraie sélection, pas du contenu recyclé\n\n"
         "⚠️ Toutes les autres demandes ne seront pas acceptées."
-        )    
+    )
 
     try:
         msg = await update.message.reply_photo(
