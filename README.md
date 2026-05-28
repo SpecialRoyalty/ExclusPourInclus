@@ -9,17 +9,17 @@ Bot Telegram déployable sur Railway avec PostgreSQL.
 - Groupes détectés automatiquement quand le bot est ajouté ou reçoit un message.
 - Choix depuis le panel admin : groupe publicité ou groupe principal.
 - Publicité avec image configurable + texte configurable + bouton vers le bot.
-- Images configurables : publicité, accueil, exemple preuve, premium.
+- Images configurables : publicité, accueil, exemple preuve.
 - Parcours utilisateur simplifié : langue, profil, déclaration du nombre total de médias, rappel exclusivité, preuve.
 - Langue française uniquement pour le moment : autres langues refusées + ban des groupes configurés.
-- Cas “pas de contenu” : accès premium ou “je possède un VIP”.
+- Cas “pas de contenu” : accès premium avec preuve de paiement ou “je possède un VIP”.
 - Validation admin des candidatures : valider, refuser, bannir. La carte admin disparaît après décision.
 - Lien unique vers le groupe principal après validation.
 - Dans le groupe principal : suppression des liens/URL/@ externes.
 - Comptage des médias valides.
 - Anti-doublons via `file_unique_id` Telegram + perceptual hash pour images.
 - Vérification silencieuse :
-  - si aucun média valide après 30 min : kick + blacklist ;
+  - si aucun média valide après 30 min : ban définitif + blacklist ;
   - si quota total non complété après 24h : ban + blacklist ;
   - pas de deuxième tentative pour le moment.
 
