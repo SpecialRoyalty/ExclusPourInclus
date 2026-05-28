@@ -460,15 +460,15 @@ async def admin_groups(c: CallbackQuery):
     await c.answer()
 
 async def render_group_list(c: CallbackQuery):
-    rows = await db.fetch("SELECT chat_id,title,type,active,targeted FROM groups ORDER BY CASE type WHEN 'main' THEN 0 WHEN 'publicity' THEN 1 ELSE 2 END, title")
+    rows = await db.fetch("SELECT chat_id,title,type,active,targeted FROM groups ORDER BY CASE type WHEN 'main' THEN 0 WHEN 'pub' THEN 1 ELSE 2 END, title")
     if not rows:
         await update_flow(c, 'Aucun groupe détecté. Ajoutez le bot dans un groupe puis envoyez un message dans ce groupe pour qu’il apparaisse ici.', reply_markup=groups_menu_kb())
         return
     text = '📋 Groupes détectés\n\nCliquez sur un groupe pour choisir son rôle : principal, publicité, ciblé ou non.'
     keyboard = []
     for r in rows:
-        icon = '⭐' if r['type'] == 'main' else ('📢' if r['type'] == 'publicity' else '⚪')
-        target = ' ☑' if r['type'] == 'publicity' and r['targeted'] else ''
+        icon = '⭐' if r['type'] == 'main' else ('📢' if r['type'] == 'pub' else '⚪')
+        target = ' ☑' if r['type'] == 'pub' and r['targeted'] else ''
         keyboard.append([(f"{icon} {r['title'] or r['chat_id']}{target}", f"group:open:{r['chat_id']}")])
     keyboard.append([('⬅️ Retour panel', 'admin:home')])
     await update_flow(c, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t,d in row] for row in keyboard]))
@@ -486,7 +486,7 @@ async def group_actions(c: CallbackQuery):
         if not r:
             await c.answer('Groupe introuvable.', show_alert=True); return
         text = f"👥 {r['title'] or r['chat_id']}\n\nRôle actuel : {r['type']}\nCiblé pub : {'oui' if r['targeted'] else 'non'}"
-        await update_flow(c, text, reply_markup=group_row_kb(chat_id, r['type']=='publicity', r['type']=='main', bool(r['targeted'])))
+        await update_flow(c, text, reply_markup=group_row_kb(chat_id, r['type']=='pub', r['type']=='main', bool(r['targeted'])))
     elif action in {'set_main','add_pub','remove_pub','toggle_target'} and len(parts) == 3:
         chat_id = int(parts[2])
         if action == 'set_main':
@@ -496,13 +496,13 @@ async def group_actions(c: CallbackQuery):
             await set_setting('main_group', str(chat_id))
             await c.answer('Groupe principal défini.', show_alert=True)
         elif action == 'add_pub':
-            await db.execute("UPDATE groups SET type='publicity', active=true, targeted=true, updated_at=now() WHERE chat_id=$1", chat_id)
+            await db.execute("UPDATE groups SET type='pub', active=true, targeted=true, updated_at=now() WHERE chat_id=$1", chat_id)
             await c.answer('Groupe publicité ajouté.', show_alert=True)
         elif action == 'remove_pub':
             await db.execute("UPDATE groups SET type='detected', targeted=false, updated_at=now() WHERE chat_id=$1", chat_id)
             await c.answer('Groupe retiré des pubs.', show_alert=True)
         elif action == 'toggle_target':
-            await db.execute("UPDATE groups SET targeted=NOT targeted, updated_at=now() WHERE chat_id=$1 AND type='publicity'", chat_id)
+            await db.execute("UPDATE groups SET targeted=NOT targeted, updated_at=now() WHERE chat_id=$1 AND type='pub'", chat_id)
             await c.answer('Ciblage modifié.', show_alert=True)
         await render_group_list(c)
     else:
@@ -553,7 +553,7 @@ async def publish_ad(chat_id: int):
         await bot.send_message(chat_id, text, reply_markup=markup)
 
 async def publish_to_targets() -> int:
-    rows = await db.fetch("SELECT chat_id FROM groups WHERE type='publicity' AND active=true AND targeted=true")
+    rows = await db.fetch("SELECT chat_id FROM groups WHERE type='pub' AND active=true AND targeted=true")
     sent = 0
     for r in rows:
         try:
@@ -580,7 +580,7 @@ async def auto_toggle(c: CallbackQuery):
 @router.callback_query(F.data == 'pub:targets')
 async def pub_targets(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
-    rows = await db.fetch("SELECT chat_id,title,targeted FROM groups WHERE type='publicity' ORDER BY title")
+    rows = await db.fetch("SELECT chat_id,title,targeted FROM groups WHERE type='pub' ORDER BY title")
     if not rows:
         await update_flow(c, 'Aucun groupe publicité configuré. Allez dans 👥 Groupes puis définissez au moins un groupe comme publicité.', reply_markup=pub_menu_kb(await get_setting('auto_pub_enabled','0')=='1'))
         await c.answer(); return
@@ -689,14 +689,14 @@ async def on_bot_chat_member(update: ChatMemberUpdated):
 
 
 async def ban_user(user_id: int, reason: str = 'ban'):
-    # Blacklist en base + bannissement dans tous les groupes détectés actifs.
+    # Blacklist en base + bannissement uniquement dans les groupes publicité actifs.
     # Correction importante : Telegram refuse de retirer le créateur/propriétaire d'un groupe.
     # On vérifie donc le statut de la cible AVANT de bannir, et on log précisément la cause.
     await db.execute("UPDATE users SET banned=true,status='banned',updated_at=now() WHERE telegram_id=$1", user_id)
-    rows = await db.fetch("SELECT chat_id,title,type FROM groups WHERE active=true")
+    rows = await db.fetch("SELECT chat_id,title,type FROM groups WHERE active=true AND type='pub'")
     if not rows:
-        await db.log(reason + '_no_groups_registered', telegram_id=user_id, level='warning')
-        await notify_admins(f"⚠️ Ban utilisateur {user_id} : aucun groupe détecté en base. Ajoutez le bot dans les groupes puis vérifiez le menu Groupes.")
+        await db.log(reason + '_no_publicity_groups_registered', telegram_id=user_id, level='warning')
+        await notify_admins(f"⚠️ Ban utilisateur {user_id} : aucun groupe publicité actif détecté. Va dans 👥 Groupes et marque au moins un groupe comme publicité.")
         return
 
     ok = 0
@@ -758,7 +758,7 @@ async def ban_user(user_id: int, reason: str = 'ban'):
         details = '\n'.join(errors[:8])
         await notify_admins(
             f"⚠️ Ban partiel pour {user_id}\n\n"
-            f"✅ Groupes bannis : {ok}\n"
+            f"✅ Groupes publicité bannis : {ok}\n"
             f"⏭️ Groupes ignorés : {skipped}\n"
             f"❌ Échecs : {failed}\n\n"
             f"Détails :\n{details}"
@@ -936,8 +936,8 @@ async def admin_info(c: CallbackQuery):
     me = await bot.get_me()
     checks.append(f'✅ Bot : @{me.username}')
     main = await get_setting('main_group', '')
-    pub_count = await db.fetchval("SELECT count(*) FROM groups WHERE type='publicity'") or 0
-    target_count = await db.fetchval("SELECT count(*) FROM groups WHERE type='publicity' AND targeted=true") or 0
+    pub_count = await db.fetchval("SELECT count(*) FROM groups WHERE type='pub'") or 0
+    target_count = await db.fetchval("SELECT count(*) FROM groups WHERE type='pub' AND targeted=true") or 0
     checks.append(f"{'✅' if main else '❌'} Groupe principal : {main or 'non configuré'}")
     checks.append(f"{'✅' if pub_count else '❌'} Groupes publicité : {pub_count} configuré(s), {target_count} ciblé(s)")
     # Vérification permissions de ban dans les groupes configurés/détectés
