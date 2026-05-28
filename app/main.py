@@ -32,8 +32,6 @@ class Apply(StatesGroup):
     profile = State()
     creators = State()
     total = State()
-    photos = State()
-    videos = State()
     proof = State()
 
 class AdminMedia(StatesGroup):
@@ -189,7 +187,7 @@ async def language(c: CallbackQuery, state: FSMContext):
     if lang != 'fr':
         messages = {
             'en': 'Only French users are accepted for now.',
-            'es': 'Por ahora solo se aceptan usuarios franceses.',
+            'es': 'Por ahora solo se aceptan personas francesas.',
             'it': 'Per il momento sono accettate solo persone francesi.',
             'ru': 'На данный момент принимаются только французы.',
             'ar': 'حالياً يتم قبول الأشخاص الفرنسيين فقط.',
@@ -197,7 +195,7 @@ async def language(c: CallbackQuery, state: FSMContext):
         await update_flow(c, messages.get(lang, 'Uniquement les personnes françaises sont acceptées pour le moment.'))
         await ban_user(c.from_user.id, reason='non_french_language')
         await state.clear()
-        await c.answer()
+        await c.answer('Accès refusé.')
         return
     await update_flow(c, 'Cette communauté est principalement francophone.\n\nMerci de répondre sérieusement aux prochaines étapes afin de préserver la qualité des accès.', reply_markup=continue_kb())
     await c.answer()
@@ -264,32 +262,7 @@ async def apply_total(m: Message, state: FSMContext):
         reply_markup=ok_kb('quota:recap'),
     )
 
-@router.message(Apply.photos)
-async def apply_photos(m: Message, state: FSMContext):
-    n = await parse_positive_int(m)
-    if n is None:
-        return
-    await state.update_data(photos=n)
-    await send_flow(m.from_user.id, m.chat.id, 'Combien environ de vidéos ?')
-    await state.set_state(Apply.videos)
-
-@router.message(Apply.videos)
-async def apply_videos(m: Message, state: FSMContext):
-    n = await parse_positive_int(m)
-    if n is None:
-        return
-    data = await state.get_data()
-    await state.update_data(videos=n)
-    await db.execute(
-        "UPDATE users SET declared_total=$2, declared_photos=$3, declared_videos=$4, status='profile_filled' WHERE telegram_id=$1",
-        m.from_user.id, int(data['total']), int(data['photos']), n,
-    )
-    await send_flow(
-        m.from_user.id,
-        m.chat.id,
-        '⚠ Important\n\nLa communauté est principalement destinée aux contenus considérés comme exclusifs ou peu diffusés.\n\nLes médias déjà largement partagés, repostés ou facilement trouvables risquent d’être refusés.\n\nLes médias déjà présents dans la base du groupe peuvent être automatiquement détectés et non comptabilisés.',
-        reply_markup=ok_kb('quota:recap'),
-    )
+# Les détails photos/vidéos ont été supprimés volontairement : seul le total déclaré est demandé.
 
 @router.callback_query(F.data == 'quota:recap')
 async def quota_recap(c: CallbackQuery):
@@ -997,3 +970,12 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
+@router.callback_query()
+async def ignored_banned_callbacks(c: CallbackQuery):
+    # Fallback de sécurité : si un utilisateur banni clique sur un ancien bouton, on ne relance aucun parcours.
+    u = await db.fetchrow('SELECT banned FROM users WHERE telegram_id=$1', c.from_user.id)
+    if u and u['banned']:
+        await c.answer('Accès bloqué.', show_alert=True)
+        return
+    await c.answer()
