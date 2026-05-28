@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -18,6 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
   first_media_at TIMESTAMPTZ,
   valid_media_count INT DEFAULT 0,
   banned BOOLEAN DEFAULT FALSE,
+  flow_message_id BIGINT,
+  flow_chat_id BIGINT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -27,7 +30,9 @@ CREATE TABLE IF NOT EXISTS groups (
   title TEXT,
   type TEXT NOT NULL CHECK(type IN ('publicity','main')),
   active BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMPTZ DEFAULT now()
+  targeted BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS applications (
@@ -35,6 +40,7 @@ CREATE TABLE IF NOT EXISTS applications (
   telegram_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE,
   status TEXT DEFAULT 'draft',
   proof_file_id TEXT,
+  proof_type TEXT DEFAULT 'photo',
   admin_decision_by BIGINT,
   decision_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now()
@@ -113,3 +119,22 @@ CREATE TABLE IF NOT EXISTS pot_transactions (
   created_by BIGINT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- upgrades safe
+ALTER TABLE users ADD COLUMN IF NOT EXISTS flow_message_id BIGINT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS flow_chat_id BIGINT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS valid_media_count INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS first_media_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS joined_main_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS attempts INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN DEFAULT FALSE;
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS targeted BOOLEAN DEFAULT TRUE;
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS proof_type TEXT DEFAULT 'photo';
+
+INSERT INTO settings(key,value) VALUES
+('ad_text', '🔒 Communauté privée francophone\n\n• Accès sélectif\n• Contribution obligatoire\n• Vérification manuelle\n\nLes candidatures sont limitées.'),
+('auto_pub_enabled', '0'),
+('auto_pub_interval_minutes', '10'),
+('pot_balance', '0')
+ON CONFLICT(key) DO NOTHING;
