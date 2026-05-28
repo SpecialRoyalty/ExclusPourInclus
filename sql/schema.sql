@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS groups (
   chat_id BIGINT PRIMARY KEY,
   title TEXT,
-  type TEXT NOT NULL DEFAULT 'detected' CHECK(type IN ('detected','publicity','main')),
+  type TEXT NOT NULL DEFAULT 'detected' CHECK(type IN ('detected','pub','main')),
   active BOOLEAN DEFAULT TRUE,
   targeted BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT now(),
@@ -128,8 +128,22 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS first_media_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS joined_main_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS attempts INT DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN DEFAULT FALSE;
-ALTER TABLE groups DROP CONSTRAINT IF EXISTS groups_type_check;
-ALTER TABLE groups ADD CONSTRAINT groups_type_check CHECK(type IN ('detected','publicity','main'));
+-- Drop any old CHECK constraint on groups.type, even if PostgreSQL generated a different name.
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT c.conname
+    FROM pg_constraint c
+    JOIN pg_class t ON c.conrelid = t.oid
+    WHERE t.relname = 'groups' AND c.contype = 'c'
+  LOOP
+    EXECUTE format('ALTER TABLE groups DROP CONSTRAINT IF EXISTS %I', r.conname);
+  END LOOP;
+END $$;
+
+UPDATE groups SET type='pub' WHERE type='publicity';
+ALTER TABLE groups ADD CONSTRAINT groups_type_check CHECK(type IN ('detected','pub','main'));
 ALTER TABLE groups ALTER COLUMN type SET DEFAULT 'detected';
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS targeted BOOLEAN DEFAULT TRUE;
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
