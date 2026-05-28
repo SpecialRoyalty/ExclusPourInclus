@@ -319,7 +319,16 @@ async def apply_proof(m: Message, state: FSMContext):
 @router.callback_query(F.data == 'premium:access')
 async def premium_access(c: CallbackQuery):
     await db.execute("UPDATE users SET status='premium_requested' WHERE telegram_id=$1", c.from_user.id)
-    await update_flow(c, "Les accès premium permettent un accès sans contribution obligatoire.\n\nLes places premium sont limitées.", reply_markup=premium_info_kb())
+    price = await get_setting('premium_price', 'à confirmer')
+    paypal = await get_setting('paypal_link', '')
+    usdt = await get_setting('usdt_address', '')
+    text = f"Les accès premium permettent un accès sans contribution obligatoire.\n\nPrix premium : {price}\n"
+    if paypal:
+        text += f"\nPayPal : {paypal}"
+    if usdt:
+        text += f"\nUSDT : {usdt}"
+    text += "\n\nLes places premium sont limitées."
+    await update_flow(c, text, reply_markup=premium_info_kb())
     await c.answer()
 
 @router.callback_query(F.data == 'premium:continue')
@@ -356,7 +365,7 @@ async def admin_home(c: CallbackQuery, state: FSMContext):
 async def admin_pub(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
     enabled = await get_setting('auto_pub_enabled', '0') == '1'
-    await update_flow(c, '📢 Publicité\n\nGérez la publicité, le texte, les groupes ciblés et l’auto-publication.', reply_markup=pub_menu_kb(enabled))
+    await update_flow(c, '📢 Publicité\n\n• Publier la publicité maintenant\n• Activer/désactiver l’auto-publication\n• Voir et cibler les groupes publicité\n• Modifier le texte de publicité', reply_markup=pub_menu_kb(enabled))
     await c.answer()
 
 @router.callback_query(F.data == 'admin:images')
@@ -487,11 +496,18 @@ async def group_actions(c: CallbackQuery):
         await c.answer('Action inconnue.', show_alert=True)
     await c.answer()
 
-@router.callback_query(F.data == 'text:set:ad_text')
-async def set_ad_text_cb(c: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.startswith('text:set:'))
+async def set_text_cb(c: CallbackQuery, state: FSMContext):
     if not is_admin(c.from_user.id): return
-    await state.update_data(setting_key='ad_text')
-    await update_flow(c, 'Envoyez le nouveau texte de publicité.')
+    key = c.data.split(':', 2)[2]
+    labels = {
+        'ad_text': 'le texte de publicité',
+        'premium_price': 'le prix premium',
+        'paypal_link': 'le PayPal / lien PayPal',
+        'usdt_address': 'l’adresse USDT',
+    }
+    await state.update_data(setting_key=key)
+    await update_flow(c, f'Envoyez maintenant {labels.get(key, key)}.')
     await state.set_state(AdminText.waiting_text)
     await c.answer()
 
@@ -502,8 +518,13 @@ async def receive_admin_text(m: Message, state: FSMContext):
     key = data.get('setting_key')
     if not key:
         await state.clear(); return
-    await set_setting(key, m.text or '')
-    await send_flow(m.from_user.id, m.chat.id, f'✅ Texte enregistré pour {key}.', reply_markup=admin_panel_kb())
+    await set_setting(key, (m.text or '').strip())
+    if key in {'premium_price', 'paypal_link', 'usdt_address'}:
+        await send_flow(m.from_user.id, m.chat.id, f'✅ Réglage paiement enregistré : {key}.', reply_markup=payments_menu_kb())
+    elif key == 'ad_text':
+        await send_flow(m.from_user.id, m.chat.id, '✅ Texte de publicité enregistré.', reply_markup=pub_menu_kb(await get_setting('auto_pub_enabled','0')=='1'))
+    else:
+        await send_flow(m.from_user.id, m.chat.id, f'✅ Réglage enregistré : {key}.', reply_markup=admin_panel_kb())
     await state.clear()
 
 # ---------- PUBLICITY ----------
@@ -774,6 +795,78 @@ async def group_messages(m: Message):
 
 # ---------- PROPOSALS / CAGNOTTE ----------
 
+@router.callback_query(F.data == 'admin:payments')
+async def admin_payments(c: CallbackQuery):
+    if not is_admin(c.from_user.id): return
+    price = await get_setting('premium_price', 'non configuré')
+    paypal = await get_setting('paypal_link', 'non configuré')
+    usdt = await get_setting('usdt_address', 'non configuré')
+    pot = await get_setting('pot_balance', '0')
+    await update_flow(
+        c,
+        f"💳 Paiements\n\nPrix premium : {price}\nPayPal : {paypal}\nUSDT : {usdt}\n\nStatistique cagnotte actuelle : {pot}€",
+        reply_markup=payments_menu_kb(),
+    )
+    await c.answer()
+
+@router.callback_query(F.data == 'payments:status')
+async def payments_status(c: CallbackQuery):
+    if not is_admin(c.from_user.id): return
+    price = await get_setting('premium_price', 'non configuré')
+    paypal = await get_setting('paypal_link', '')
+    usdt = await get_setting('usdt_address', '')
+    pot = await get_setting('pot_balance', '0')
+    pending = await db.fetchval("SELECT count(*) FROM payments WHERE status='pending'") or 0
+    validated = await db.fetchval("SELECT count(*) FROM payments WHERE status='validated'") or 0
+    await update_flow(
+        c,
+        "📊 Statut paiements\n\n"
+        f"Prix premium : {price}\n"
+        f"PayPal configuré : {'✅' if paypal else '❌'}\n"
+        f"USDT configuré : {'✅' if usdt else '❌'}\n"
+        f"Paiements en attente : {pending}\n"
+        f"Paiements validés : {validated}\n"
+        f"Cagnotte actuelle : {pot}€",
+        reply_markup=payments_menu_kb(),
+    )
+    await c.answer()
+
+@router.callback_query(F.data == 'admin:moderation')
+async def admin_moderation(c: CallbackQuery):
+    if not is_admin(c.from_user.id): return
+    pending = await db.fetchval("SELECT count(*) FROM applications WHERE status='pending_admin'") or 0
+    banned = await db.fetchval("SELECT count(*) FROM users WHERE banned=true") or 0
+    await update_flow(c, f'📥 Modération\n\nCandidatures en attente : {pending}\nUtilisateurs blacklistés : {banned}', reply_markup=moderation_menu_kb())
+    await c.answer()
+
+@router.callback_query(F.data == 'admin:info')
+async def admin_info(c: CallbackQuery):
+    if not is_admin(c.from_user.id): return
+    checks = []
+    try:
+        await db.fetchval('SELECT 1')
+        checks.append('✅ Base de données : OK')
+    except Exception as e:
+        checks.append(f'❌ Base de données : erreur {e}')
+    me = await bot.get_me()
+    checks.append(f'✅ Bot : @{me.username}')
+    main = await get_setting('main_group', '')
+    pub_count = await db.fetchval("SELECT count(*) FROM groups WHERE type='publicity'") or 0
+    target_count = await db.fetchval("SELECT count(*) FROM groups WHERE type='publicity' AND targeted=true") or 0
+    checks.append(f"{'✅' if main else '❌'} Groupe principal : {main or 'non configuré'}")
+    checks.append(f"{'✅' if pub_count else '❌'} Groupes publicité : {pub_count} configuré(s), {target_count} ciblé(s)")
+    for label, key in [('Image pub','ad_image_file_id'), ('Image accueil','welcome_image_file_id'), ('Image preuve','proof_example_image_file_id')]:
+        checks.append(f"{'✅' if await get_setting(key, '') else '❌'} {label}")
+    checks.append(f"{'✅' if await get_setting('ad_text','') else '❌'} Texte publicité")
+    checks.append(f"{'✅' if await get_setting('premium_price','') else '❌'} Prix premium")
+    checks.append(f"{'✅' if await get_setting('paypal_link','') else '❌'} PayPal")
+    checks.append(f"{'✅' if await get_setting('usdt_address','') else '❌'} USDT")
+    enabled = await get_setting('auto_pub_enabled', '0') == '1'
+    checks.append(f"{'🟢' if enabled else '🔴'} Auto pub : {'ON' if enabled else 'OFF'}")
+    await update_flow(c, 'ℹ️ Info / Vérification\n\n' + '\n'.join(checks), reply_markup=back_admin_kb())
+    await c.answer()
+
+
 @router.message(Command('proposer'))
 async def propose(m: Message, state: FSMContext):
     st = await user_status(m.from_user.id)
@@ -910,7 +1003,7 @@ async def admin_proposals(c: CallbackQuery):
 @router.callback_query(F.data == 'admin:settings')
 async def admin_settings(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
-    await update_flow(c, '⚙️ Réglages\n\nLes groupes sont détectés automatiquement. Utilisez le menu 👥 Groupes pour choisir principal/publicité.\nLa publicité et la cagnotte se gèrent depuis les boutons du panel.', reply_markup=back_admin_kb())
+    await update_flow(c, '⚙️ Réglages\n\nVersion simple active :\n• français uniquement ;\n• pas de deuxième tentative ;\n• contrôle silencieux des contributions ;\n• anti-liens et anti-doublons actifs.\n\nLes groupes se configurent dans 👥 Groupes. Les paiements se configurent dans 💳 Paiements.', reply_markup=back_admin_kb())
     await c.answer()
 
 # ---------- MONITORS ----------

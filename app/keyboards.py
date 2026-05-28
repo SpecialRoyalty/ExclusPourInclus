@@ -54,10 +54,9 @@ def rules_kb(next_id: int):
 def admin_panel_kb():
     return kb([
         [('📢 Publicité', 'admin:pub'), ('🖼 Images', 'admin:images')],
-        [('👥 Groupes', 'admin:groups'), ('📥 Candidatures', 'admin:apps')],
-        [('💰 Cagnotte', 'admin:pot'), ('📊 Stats', 'admin:stats')],
-        [('🗳 Propositions', 'admin:proposals'), ('🚫 Blacklist', 'admin:blacklist')],
-        [('⚙️ Réglages', 'admin:settings')],
+        [('👥 Groupes', 'admin:groups'), ('💳 Paiements', 'admin:payments')],
+        [('📥 Modération', 'admin:moderation'), ('⚙️ Réglages', 'admin:settings')],
+        [('ℹ️ Info / Vérification', 'admin:info')],
     ])
 
 
@@ -66,11 +65,11 @@ def back_admin_kb():
 
 
 def pub_menu_kb(auto_enabled: bool):
-    label = '⛔ Désactiver auto pub' if auto_enabled else '🔁 Activer auto pub'
+    auto_label = '🟢 Auto pub : ON' if auto_enabled else '🔴 Auto pub : OFF'
     return kb([
         [('📢 Publier maintenant', 'pub:now')],
-        [(label, 'pub:auto_toggle')],
-        [('🎯 Groupes ciblés', 'pub:targets')],
+        [(auto_label, 'pub:auto_toggle')],
+        [('👁 Voir groupes publicité', 'pub:targets')],
         [('📝 Modifier texte pub', 'text:set:ad_text')],
         [('⬅️ Retour panel', 'admin:home')],
     ])
@@ -130,6 +129,24 @@ def proposal_admin_kb(pid: int):
 def proposal_vote_kb(pid: int):
     return kb([[('✅ Oui', f'voteprop:{pid}:yes'), ('❌ Non', f'voteprop:{pid}:no')]])
 
+
+
+def payments_menu_kb():
+    return kb([
+        [('💵 Prix premium', 'text:set:premium_price')],
+        [('💸 PayPal', 'text:set:paypal_link')],
+        [('₮ USDT', 'text:set:usdt_address')],
+        [('📊 Statut paiements', 'payments:status')],
+        [('⬅️ Retour panel', 'admin:home')],
+    ])
+
+
+def moderation_menu_kb():
+    return kb([
+        [('📥 Candidatures en attente', 'admin:apps')],
+        [('🚫 Blacklist', 'admin:blacklist')],
+        [('⬅️ Retour panel', 'admin:home')],
+    ])
 
 def no_content_kb():
     return kb([
