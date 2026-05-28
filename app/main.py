@@ -696,7 +696,7 @@ async def ban_user(user_id: int, reason: str = 'ban'):
     rows = await db.fetch("SELECT chat_id,title,type FROM groups WHERE active=true AND type='pub'")
     if not rows:
         await db.log(reason + '_no_publicity_groups_registered', telegram_id=user_id, level='warning')
-        await notify_admins(f"⚠️ Ban utilisateur {user_id} : aucun groupe publicité actif détecté. Va dans 👥 Groupes et marque au moins un groupe comme publicité.")
+        await notify_admins(f"⚠️ Ban pub utilisateur {user_id} : aucun groupe pub actif détecté. Va dans 👥 Groupes et marque au moins un groupe comme publicité.")
         return
 
     ok = 0
@@ -741,7 +741,7 @@ async def ban_user(user_id: int, reason: str = 'ban'):
                 status = f"member_check_failed: {member_error}"
 
             # 3) Bannir.
-            await bot.ban_chat_member(chat_id, user_id)
+            await bot.ban_chat_member(chat_id=chat_id, user_id=user_id, revoke_messages=False)
             ok += 1
             await db.log('group_ban_success', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'status_before': status, 'group_type': group_type, 'title': title})
         except Exception as e:
@@ -767,7 +767,7 @@ async def ban_user(user_id: int, reason: str = 'ban'):
 async def ban_from_chat(chat_id: int, user_id: int, reason: str):
     # Ban définitif dans un chat précis : pas de unban derrière.
     try:
-        await bot.ban_chat_member(chat_id, user_id)
+        await bot.ban_chat_member(chat_id=chat_id, user_id=user_id, revoke_messages=False)
         await db.log(reason, telegram_id=user_id, chat_id=chat_id, data={'ban_type': 'permanent_chat_ban'})
     except Exception as e:
         await db.log(reason + '_failed', telegram_id=user_id, chat_id=chat_id, data={'error': str(e)}, level='error')
@@ -829,10 +829,15 @@ async def group_messages(m: Message):
                 await m.delete()
             except Exception:
                 pass
-            try:
-                await bot.ban_chat_member(m.chat.id, m.from_user.id)
-            except Exception as e:
-                await db.log('banned_user_group_ban_failed', telegram_id=m.from_user.id, chat_id=m.chat.id, data={'error': str(e)}, level='error')
+            gtype = await db.fetchval('SELECT type FROM groups WHERE chat_id=$1', m.chat.id)
+            # Les utilisateurs blacklistés sont expulsés automatiquement uniquement des groupes pub.
+            # Le groupe principal est géré par les règles d'entrée/quota dédiées.
+            if gtype == 'pub':
+                try:
+                    await bot.ban_chat_member(chat_id=m.chat.id, user_id=m.from_user.id, revoke_messages=False)
+                    await db.log('banned_user_pub_group_ban_success', telegram_id=m.from_user.id, chat_id=m.chat.id)
+                except Exception as e:
+                    await db.log('banned_user_pub_group_ban_failed', telegram_id=m.from_user.id, chat_id=m.chat.id, data={'error': str(e)}, level='error')
             return
     main = await get_setting('main_group', '')
     if not main or str(m.chat.id) != str(main):
