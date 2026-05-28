@@ -72,6 +72,7 @@ def pub_menu_kb(auto_enabled: bool):
     return kb([
         [('📢 Publier maintenant', 'pub:now')],
         [(auto_label, 'pub:auto_toggle')],
+        [('⏱ Fréquence publicité', 'text:set:auto_pub_interval_minutes')],
         [('👁 Voir groupes publicité', 'pub:targets')],
         [('📝 Modifier texte pub', 'text:set:ad_text')],
         [('⬅️ Retour panel', 'admin:home')],
@@ -164,3 +165,10 @@ def premium_info_kb():
 
 def vip_info_kb():
     return kb([[('💳 Continuer', 'vip:continue')], [('⬅️ Retour', 'profile:none')]])
+
+
+def settings_menu_kb():
+    return kb([
+        [('⏱ Fréquence publicité', 'text:set:auto_pub_interval_minutes')],
+        [('⬅️ Retour panel', 'admin:home')],
+    ])

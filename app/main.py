@@ -518,9 +518,14 @@ async def set_text_cb(c: CallbackQuery, state: FSMContext):
         'premium_price': 'le prix premium',
         'paypal_link': 'le PayPal / lien PayPal',
         'usdt_address': 'l’adresse USDT',
+        'auto_pub_interval_minutes': 'la fréquence de publicité en minutes',
     }
     await state.update_data(setting_key=key)
-    await update_flow(c, f'Envoyez maintenant {labels.get(key, key)}.')
+    if key == 'auto_pub_interval_minutes':
+        current = await get_setting('auto_pub_interval_minutes', '10')
+        await update_flow(c, f'⏱ Fréquence publicité\n\nFréquence actuelle : {current} minute(s).\n\nEnvoyez la nouvelle fréquence en minutes. Exemple : 30, 60, 180.')
+    else:
+        await update_flow(c, f'Envoyez maintenant {labels.get(key, key)}.')
     await state.set_state(AdminText.waiting_text)
     await c.answer()
 
@@ -531,7 +536,20 @@ async def receive_admin_text(m: Message, state: FSMContext):
     key = data.get('setting_key')
     if not key:
         await state.clear(); return
-    await set_setting(key, (m.text or '').strip())
+    value = (m.text or '').strip()
+    if key == 'auto_pub_interval_minutes':
+        try:
+            minutes = int(value)
+            if minutes < 1 or minutes > 10080:
+                raise ValueError
+        except ValueError:
+            await m.answer('Envoyez un nombre entier de minutes entre 1 et 10080.')
+            return
+        await set_setting(key, str(minutes))
+        await send_flow(m.from_user.id, m.chat.id, f'✅ Fréquence publicité enregistrée : {minutes} minute(s).', reply_markup=pub_menu_kb(await get_setting('auto_pub_enabled','0')=='1'))
+        await state.clear()
+        return
+    await set_setting(key, value)
     if key in {'premium_price', 'paypal_link', 'usdt_address'}:
         await send_flow(m.from_user.id, m.chat.id, f'✅ Réglage paiement enregistré : {key}.', reply_markup=payments_menu_kb())
     elif key == 'ad_text':
@@ -543,14 +561,25 @@ async def receive_admin_text(m: Message, state: FSMContext):
 # ---------- PUBLICITY ----------
 
 async def publish_ad(chat_id: int):
+    # Mode propre : une seule publicité visible par groupe.
+    # Avant d'envoyer la nouvelle pub, on supprime l'ancienne si elle existe.
+    row = await db.fetchrow('SELECT last_ad_message_id FROM groups WHERE chat_id=$1', chat_id)
+    if row and row['last_ad_message_id']:
+        try:
+            await bot.delete_message(chat_id, int(row['last_ad_message_id']))
+        except Exception as e:
+            # Message déjà supprimé / trop ancien / permissions manquantes : on continue.
+            await db.log('delete_previous_ad_failed', chat_id=chat_id, data={'message_id': int(row['last_ad_message_id']), 'error': str(e)}, level='warning')
+
     text = await get_setting('ad_text')
     image = await get_setting('ad_image_file_id', '')
     me = await bot.get_me()
     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🔗 Accéder au groupe privé', url=f'https://t.me/{me.username}?start=ad')]])
     if image:
-        await bot.send_photo(chat_id, image, caption=text, reply_markup=markup)
+        msg = await bot.send_photo(chat_id, image, caption=text, reply_markup=markup)
     else:
-        await bot.send_message(chat_id, text, reply_markup=markup)
+        msg = await bot.send_message(chat_id, text, reply_markup=markup)
+    await db.execute('UPDATE groups SET last_ad_message_id=$2, updated_at=now() WHERE chat_id=$1', chat_id, msg.message_id)
 
 async def publish_to_targets() -> int:
     rows = await db.fetch("SELECT chat_id FROM groups WHERE type='pub' AND active=true AND targeted=true")
@@ -1072,7 +1101,8 @@ async def admin_proposals(c: CallbackQuery):
 @router.callback_query(F.data == 'admin:settings')
 async def admin_settings(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
-    await update_flow(c, '⚙️ Réglages\n\nVersion simple active :\n• français uniquement ;\n• pas de deuxième tentative ;\n• contrôle silencieux des contributions ;\n• anti-liens et anti-doublons actifs.\n\nLes groupes se configurent dans 👥 Groupes. Les paiements se configurent dans 💳 Paiements.', reply_markup=back_admin_kb())
+    interval = await get_setting('auto_pub_interval_minutes', '10')
+    await update_flow(c, f'⚙️ Réglages\n\nVersion simple active :\n• français uniquement ;\n• pas de deuxième tentative ;\n• contrôle silencieux des contributions ;\n• anti-liens et anti-doublons actifs ;\n• une seule publicité visible par groupe.\n\n⏱ Fréquence publicité actuelle : {interval} minute(s).', reply_markup=settings_menu_kb())
     await c.answer()
 
 
