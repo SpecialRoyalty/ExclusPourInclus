@@ -97,12 +97,22 @@ def image_delete_kb():
 
 def groups_menu_kb():
     return kb([
-        [('⭐ Définir ce groupe comme principal', 'group:set_main')],
-        [('➕ Ajouter ce groupe aux pubs', 'group:add_pub')],
-        [('➖ Retirer ce groupe des pubs', 'group:remove_pub')],
-        [('📋 Voir groupes', 'group:list')],
+        [('🔎 Voir groupes détectés', 'group:list')],
         [('⬅️ Retour panel', 'admin:home')],
     ])
+
+
+def group_row_kb(chat_id: int, is_pub: bool, is_main: bool, targeted: bool):
+    rows = []
+    if not is_main:
+        rows.append([('⭐ Définir principal', f'group:set_main:{chat_id}')])
+    if is_pub:
+        rows.append([('➖ Retirer des pubs', f'group:remove_pub:{chat_id}')])
+        rows.append([(('☑ Ciblé pub' if targeted else '☐ Non ciblé'), f'group:toggle_target:{chat_id}')])
+    else:
+        rows.append([('➕ Définir comme pub', f'group:add_pub:{chat_id}')])
+    rows.append([('⬅️ Retour groupes', 'group:list')])
+    return kb(rows)
 
 
 def admin_application_kb(app_id: int, user_id: int):

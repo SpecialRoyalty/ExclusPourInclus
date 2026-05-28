@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from PIL import Image
 import imagehash
@@ -86,29 +86,33 @@ async def delete_previous_flow_message(user_id: int):
     except Exception:
         pass
 
-async def send_flow(user_id: int, chat_id: int, text: str, reply_markup=None, image_setting: str | None = None):
-    await delete_previous_flow_message(user_id)
+async def send_flow(user_id: int, chat_id: int, text: str, reply_markup=None, image_setting: str | None = None, replace: bool = False):
+    # replace=True sert uniquement aux écrans persistants (/start ou panel admin).
+    # Les autres messages du bot ne sont plus supprimés automatiquement.
+    if replace:
+        await delete_previous_flow_message(user_id)
     image_file_id = await get_setting(image_setting, '') if image_setting else ''
     if image_file_id:
         msg = await bot.send_photo(chat_id, image_file_id, caption=text, reply_markup=reply_markup)
     else:
         msg = await bot.send_message(chat_id, text, reply_markup=reply_markup)
-    await db.execute('UPDATE users SET flow_chat_id=$2, flow_message_id=$3 WHERE telegram_id=$1', user_id, chat_id, msg.message_id)
+    if replace:
+        await db.execute('UPDATE users SET flow_chat_id=$2, flow_message_id=$3 WHERE telegram_id=$1', user_id, chat_id, msg.message_id)
     return msg
 
 async def update_flow(c: CallbackQuery, text: str, reply_markup=None, image_setting: str | None = None):
     image_file_id = await get_setting(image_setting, '') if image_setting else ''
     if image_file_id:
-        await send_flow(c.from_user.id, c.message.chat.id, text, reply_markup, image_setting)
+        await send_flow(c.from_user.id, c.message.chat.id, text, reply_markup, image_setting, replace=True)
         return
     try:
         if c.message.photo:
-            await send_flow(c.from_user.id, c.message.chat.id, text, reply_markup)
+            await send_flow(c.from_user.id, c.message.chat.id, text, reply_markup, replace=True)
         else:
             await c.message.edit_text(text, reply_markup=reply_markup)
             await db.execute('UPDATE users SET flow_chat_id=$2, flow_message_id=$3 WHERE telegram_id=$1', c.from_user.id, c.message.chat.id, c.message.message_id)
     except TelegramBadRequest:
-        await send_flow(c.from_user.id, c.message.chat.id, text, reply_markup)
+        await send_flow(c.from_user.id, c.message.chat.id, text, reply_markup, replace=True)
 
 async def user_status(uid: int) -> str:
     return await db.fetchval('SELECT status FROM users WHERE telegram_id=$1', uid) or 'new'
@@ -120,7 +124,17 @@ async def clean_user_message(m: Message):
         pass
 
 async def show_admin_panel(chat_id: int, user_id: int):
-    await send_flow(user_id, chat_id, 'Panneau admin', reply_markup=admin_panel_kb())
+    await send_flow(user_id, chat_id, 'Panneau admin', reply_markup=admin_panel_kb(), replace=True)
+
+
+async def register_detected_group(chat):
+    if getattr(chat, 'type', None) not in {'group', 'supergroup'}:
+        return
+    existing = await db.fetchrow('SELECT type FROM groups WHERE chat_id=$1', chat.id)
+    if existing:
+        await db.execute('UPDATE groups SET title=$2, updated_at=now() WHERE chat_id=$1', chat.id, chat.title or '')
+    else:
+        await db.execute("INSERT INTO groups(chat_id,title,type,active,targeted) VALUES($1,$2,'detected',true,false)", chat.id, chat.title or '')
 
 # ---------- START / ONBOARDING ----------
 
@@ -131,7 +145,7 @@ async def start(m: Message, state: FSMContext):
     await state.clear()
     u = await db.fetchrow('SELECT banned,status FROM users WHERE telegram_id=$1', m.from_user.id)
     if u and u['banned']:
-        await send_flow(m.from_user.id, m.chat.id, 'Votre accès est bloqué.')
+        await send_flow(m.from_user.id, m.chat.id, 'Votre accès est bloqué.', replace=True)
         return
     if is_admin(m.from_user.id):
         await show_admin_panel(m.chat.id, m.from_user.id)
@@ -142,6 +156,7 @@ async def start(m: Message, state: FSMContext):
         'Bienvenue.\n\nVous êtes sur le point de rejoindre une communauté privée réservée aux profils capables d’apporter du contenu inédit.\n\nLe processus d’accès est sélectif afin de préserver la qualité du groupe.',
         reply_markup=start_kb(),
         image_setting='welcome_image_file_id',
+        replace=True,
     )
 
 @router.message(Command('admin'))
@@ -397,45 +412,58 @@ async def image_preview(c: CallbackQuery):
 @router.callback_query(F.data == 'admin:groups')
 async def admin_groups(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
-    await update_flow(c, '👥 Groupes\n\nUtilisez ces boutons depuis le groupe concerné, ou utilisez les commandes dans le groupe : /set_main_group et /add_pub_group.', reply_markup=groups_menu_kb())
+    await update_flow(c, '👥 Groupes\n\nLe bot détecte automatiquement les groupes dans lesquels il reçoit un message ou dans lesquels il est ajouté. Choisissez ensuite le rôle de chaque groupe ici.', reply_markup=groups_menu_kb())
     await c.answer()
+
+async def render_group_list(c: CallbackQuery):
+    rows = await db.fetch("SELECT chat_id,title,type,active,targeted FROM groups ORDER BY CASE type WHEN 'main' THEN 0 WHEN 'publicity' THEN 1 ELSE 2 END, title")
+    if not rows:
+        await update_flow(c, 'Aucun groupe détecté. Ajoutez le bot dans un groupe puis envoyez un message dans ce groupe pour qu’il apparaisse ici.', reply_markup=groups_menu_kb())
+        return
+    text = '📋 Groupes détectés\n\nCliquez sur un groupe pour choisir son rôle : principal, publicité, ciblé ou non.'
+    keyboard = []
+    for r in rows:
+        icon = '⭐' if r['type'] == 'main' else ('📢' if r['type'] == 'publicity' else '⚪')
+        target = ' ☑' if r['type'] == 'publicity' and r['targeted'] else ''
+        keyboard.append([(f"{icon} {r['title'] or r['chat_id']}{target}", f"group:open:{r['chat_id']}")])
+    keyboard.append([('⬅️ Retour panel', 'admin:home')])
+    await update_flow(c, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t,d in row] for row in keyboard]))
 
 @router.callback_query(F.data.startswith('group:'))
 async def group_actions(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
-    action = c.data.split(':', 1)[1]
+    parts = c.data.split(':')
+    action = parts[1]
     if action == 'list':
-        rows = await db.fetch('SELECT chat_id,title,type,active,targeted FROM groups ORDER BY type,title')
-        if not rows:
-            text = 'Aucun groupe configuré.'
-        else:
-            lines = ['📋 Groupes configurés']
-            for r in rows:
-                lines.append(f"• {r['type']} | {r['title'] or '-'} | {r['chat_id']} | actif={r['active']} | ciblé={r['targeted']}")
-            text = '\n'.join(lines)
-        await update_flow(c, text, reply_markup=groups_menu_kb())
+        await render_group_list(c)
+    elif action == 'open' and len(parts) == 3:
+        chat_id = int(parts[2])
+        r = await db.fetchrow('SELECT chat_id,title,type,targeted FROM groups WHERE chat_id=$1', chat_id)
+        if not r:
+            await c.answer('Groupe introuvable.', show_alert=True); return
+        text = f"👥 {r['title'] or r['chat_id']}\n\nRôle actuel : {r['type']}\nCiblé pub : {'oui' if r['targeted'] else 'non'}"
+        await update_flow(c, text, reply_markup=group_row_kb(chat_id, r['type']=='publicity', r['type']=='main', bool(r['targeted'])))
+    elif action in {'set_main','add_pub','remove_pub','toggle_target'} and len(parts) == 3:
+        chat_id = int(parts[2])
+        if action == 'set_main':
+            # Un seul groupe principal à la fois. L’ancien principal redevient détecté.
+            await db.execute("UPDATE groups SET type='detected', targeted=false, updated_at=now() WHERE type='main'")
+            await db.execute("UPDATE groups SET type='main', active=true, targeted=false, updated_at=now() WHERE chat_id=$1", chat_id)
+            await set_setting('main_group', str(chat_id))
+            await c.answer('Groupe principal défini.', show_alert=True)
+        elif action == 'add_pub':
+            await db.execute("UPDATE groups SET type='publicity', active=true, targeted=true, updated_at=now() WHERE chat_id=$1", chat_id)
+            await c.answer('Groupe publicité ajouté.', show_alert=True)
+        elif action == 'remove_pub':
+            await db.execute("UPDATE groups SET type='detected', targeted=false, updated_at=now() WHERE chat_id=$1", chat_id)
+            await c.answer('Groupe retiré des pubs.', show_alert=True)
+        elif action == 'toggle_target':
+            await db.execute("UPDATE groups SET targeted=NOT targeted, updated_at=now() WHERE chat_id=$1 AND type='publicity'", chat_id)
+            await c.answer('Ciblage modifié.', show_alert=True)
+        await render_group_list(c)
     else:
-        await c.answer('Ces actions doivent être faites directement dans le groupe concerné via /set_main_group ou /add_pub_group.', show_alert=True)
+        await c.answer('Action inconnue.', show_alert=True)
     await c.answer()
-
-@router.message(Command('set_main_group'))
-async def cmd_set_main_group(m: Message):
-    if not is_admin(m.from_user.id): return
-    if m.chat.type not in {'group', 'supergroup'}:
-        await m.answer('À utiliser dans le groupe principal.')
-        return
-    await set_setting('main_group', str(m.chat.id))
-    await db.execute("INSERT INTO groups(chat_id,title,type,active,targeted) VALUES($1,$2,'main',true,false) ON CONFLICT(chat_id) DO UPDATE SET title=$2,type='main',active=true,targeted=false,updated_at=now()", m.chat.id, m.chat.title or '')
-    await m.answer('✅ Groupe principal défini.')
-
-@router.message(Command('add_pub_group'))
-async def cmd_add_pub_group(m: Message):
-    if not is_admin(m.from_user.id): return
-    if m.chat.type not in {'group', 'supergroup'}:
-        await m.answer('À utiliser dans un groupe publicité.')
-        return
-    await db.execute("INSERT INTO groups(chat_id,title,type,active,targeted) VALUES($1,$2,'publicity',true,true) ON CONFLICT(chat_id) DO UPDATE SET title=$2,type='publicity',active=true,targeted=true,updated_at=now()", m.chat.id, m.chat.title or '')
-    await m.answer('✅ Groupe publicité ajouté et ciblé.')
 
 @router.callback_query(F.data == 'text:set:ad_text')
 async def set_ad_text_cb(c: CallbackQuery, state: FSMContext):
@@ -504,7 +532,7 @@ async def pub_targets(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
     rows = await db.fetch("SELECT chat_id,title,targeted FROM groups WHERE type='publicity' ORDER BY title")
     if not rows:
-        await update_flow(c, 'Aucun groupe publicité configuré. Ajoutez le bot dans un groupe puis utilisez /add_pub_group.', reply_markup=pub_menu_kb(await get_setting('auto_pub_enabled','0')=='1'))
+        await update_flow(c, 'Aucun groupe publicité configuré. Allez dans 👥 Groupes puis définissez au moins un groupe comme publicité.', reply_markup=pub_menu_kb(await get_setting('auto_pub_enabled','0')=='1'))
         await c.answer(); return
     keyboard = []
     for r in rows:
@@ -555,13 +583,17 @@ async def app_decision(c: CallbackQuery):
     await c.answer()
 
 async def safe_mark_admin_message(c: CallbackQuery, suffix: str):
+    # Après décision admin, on nettoie la candidature pour ne pas polluer le chat admin.
     try:
-        if c.message.caption:
-            await c.message.edit_caption(c.message.caption + f'\n\n{suffix}')
-        else:
-            await c.message.edit_text(c.message.text + f'\n\n{suffix}')
+        await c.message.delete()
     except Exception:
-        pass
+        try:
+            if c.message.caption:
+                await c.message.edit_caption(c.message.caption + f'\n\n{suffix}')
+            else:
+                await c.message.edit_text((c.message.text or '') + f'\n\n{suffix}')
+        except Exception:
+            pass
 
 @router.callback_query(F.data.startswith('rule:'))
 async def rules(c: CallbackQuery):
@@ -596,6 +628,15 @@ async def rules_done(c: CallbackQuery):
     await c.answer()
 
 # ---------- GROUP MODERATION / MEDIA COUNT ----------
+
+@router.my_chat_member()
+async def on_bot_chat_member(update: ChatMemberUpdated):
+    # Détection automatique quand le bot est ajouté à un groupe.
+    try:
+        await register_detected_group(update.chat)
+    except Exception:
+        pass
+
 
 async def ban_user(user_id: int, reason: str = 'ban'):
     await db.execute("UPDATE users SET banned=true,status='banned',updated_at=now() WHERE telegram_id=$1", user_id)
@@ -663,6 +704,7 @@ async def perceptual_hash(file_id: str) -> str | None:
 
 @router.message(F.chat.type.in_({'group','supergroup'}))
 async def group_messages(m: Message):
+    await register_detected_group(m.chat)
     main = await get_setting('main_group', '')
     if not main or str(m.chat.id) != str(main):
         return
@@ -846,7 +888,7 @@ async def admin_proposals(c: CallbackQuery):
 @router.callback_query(F.data == 'admin:settings')
 async def admin_settings(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
-    await update_flow(c, '⚙️ Réglages\n\nCommandes utiles :\n/set_main_group dans le groupe principal\n/add_pub_group dans un groupe publicité\n/pub_now pour publier\n/set_pot 0 pour déclarer la cagnotte', reply_markup=back_admin_kb())
+    await update_flow(c, '⚙️ Réglages\n\nLes groupes sont détectés automatiquement. Utilisez le menu 👥 Groupes pour choisir principal/publicité.\nLa publicité et la cagnotte se gèrent depuis les boutons du panel.', reply_markup=back_admin_kb())
     await c.answer()
 
 # ---------- MONITORS ----------
