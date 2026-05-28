@@ -186,6 +186,19 @@ async def interested(c: CallbackQuery, state: FSMContext):
 async def language(c: CallbackQuery, state: FSMContext):
     lang = c.data.split(':', 1)[1]
     await db.execute("UPDATE users SET language=$2,status='language_chosen' WHERE telegram_id=$1", c.from_user.id, lang)
+    if lang != 'fr':
+        messages = {
+            'en': 'Only French users are accepted for now.',
+            'es': 'Por ahora solo se aceptan usuarios franceses.',
+            'it': 'Per il momento sono accettate solo persone francesi.',
+            'ru': 'На данный момент принимаются только французы.',
+            'ar': 'حالياً يتم قبول الأشخاص الفرنسيين فقط.',
+        }
+        await update_flow(c, messages.get(lang, 'Uniquement les personnes françaises sont acceptées pour le moment.'))
+        await ban_user(c.from_user.id, reason='non_french_language')
+        await state.clear()
+        await c.answer()
+        return
     await update_flow(c, 'Cette communauté est principalement francophone.\n\nMerci de répondre sérieusement aux prochaines étapes afin de préserver la qualité des accès.', reply_markup=continue_kb())
     await c.answer()
 
@@ -201,7 +214,7 @@ async def choose_profile(c: CallbackQuery, state: FSMContext):
     await db.execute('UPDATE users SET profile_type=$2 WHERE telegram_id=$1', c.from_user.id, p)
     if p == 'none':
         await db.execute("UPDATE users SET status='premium_proposed' WHERE telegram_id=$1", c.from_user.id)
-        await update_flow(c, 'Les accès gratuits sont réservés aux membres capables de contribuer à la communauté.\n\nCertaines places premium payantes peuvent être ouvertes ultérieurement.')
+        await update_flow(c, 'Les accès gratuits sont réservés aux membres capables de contribuer à la communauté.\n\nCertaines places premium payantes peuvent être ouvertes ultérieurement.', reply_markup=no_content_kb())
         await c.answer()
         return
     await state.update_data(profile_type=p)
@@ -239,8 +252,17 @@ async def apply_total(m: Message, state: FSMContext):
     if n is None:
         return
     await state.update_data(total=n)
-    await send_flow(m.from_user.id, m.chat.id, 'Combien environ de photos ?')
-    await state.set_state(Apply.photos)
+    data = await state.get_data()
+    await db.execute(
+        "UPDATE users SET declared_total=$2, declared_photos=0, declared_videos=0, status='profile_filled' WHERE telegram_id=$1",
+        m.from_user.id, n,
+    )
+    await send_flow(
+        m.from_user.id,
+        m.chat.id,
+        '⚠ Important\n\nLa communauté est principalement destinée aux contenus considérés comme exclusifs ou peu diffusés.\n\nLes médias déjà largement partagés, repostés ou facilement trouvables risquent d’être refusés.\n\nLes médias déjà présents dans la base du groupe peuvent être automatiquement détectés, non comptabilisés, et vous pouvez être banni.',
+        reply_markup=ok_kb('quota:recap'),
+    )
 
 @router.message(Apply.photos)
 async def apply_photos(m: Message, state: FSMContext):
@@ -271,8 +293,8 @@ async def apply_videos(m: Message, state: FSMContext):
 
 @router.callback_query(F.data == 'quota:recap')
 async def quota_recap(c: CallbackQuery):
-    u = await db.fetchrow('SELECT declared_total,declared_photos,declared_videos FROM users WHERE telegram_id=$1', c.from_user.id)
-    await update_flow(c, f"Récapitulatif :\n\n📦 Médias déclarés : {u['declared_total']}\n🖼 Photos : {u['declared_photos']}\n🎥 Vidéos : {u['declared_videos']}\n\nConfirmez-vous ces informations ?", reply_markup=confirm_kb())
+    u = await db.fetchrow('SELECT declared_total FROM users WHERE telegram_id=$1', c.from_user.id)
+    await update_flow(c, f"Récapitulatif :\n\n📦 Médias déclarés : {u['declared_total']}\n\nConfirmez-vous ces informations ?", reply_markup=confirm_kb())
     await c.answer()
 
 @router.callback_query(F.data == 'quota:edit')
@@ -307,8 +329,8 @@ async def apply_proof(m: Message, state: FSMContext):
         m.from_user.id, file_id, proof_type,
     )
     await db.execute("UPDATE users SET status='proof_sent' WHERE telegram_id=$1", m.from_user.id)
-    u = await db.fetchrow('SELECT declared_total,declared_photos,declared_videos FROM users WHERE telegram_id=$1', m.from_user.id)
-    caption = f"📥 Nouvelle candidature\n\n👤 Utilisateur : @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\n\n📦 Déclaré : {u['declared_total']} médias\n🖼 Photos : {u['declared_photos']}\n🎥 Vidéos : {u['declared_videos']}"
+    u = await db.fetchrow('SELECT declared_total FROM users WHERE telegram_id=$1', m.from_user.id)
+    caption = f"📥 Nouvelle candidature\n\n👤 Utilisateur : @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\n\n📦 Déclaré : {u['declared_total']} médias"
     for aid in config.admin_ids:
         try:
             if proof_type == 'photo':
@@ -319,6 +341,33 @@ async def apply_proof(m: Message, state: FSMContext):
             await bot.send_message(aid, caption, reply_markup=admin_application_kb(app_id, m.from_user.id))
     await send_flow(m.from_user.id, m.chat.id, 'Votre candidature a été envoyée aux admins. Vous serez notifié après décision.')
     await state.clear()
+
+
+@router.callback_query(F.data == 'premium:access')
+async def premium_access(c: CallbackQuery):
+    await db.execute("UPDATE users SET status='premium_requested' WHERE telegram_id=$1", c.from_user.id)
+    await update_flow(c, "Les accès premium permettent un accès sans contribution obligatoire.\n\nLes places premium sont limitées.", reply_markup=premium_info_kb())
+    await c.answer()
+
+@router.callback_query(F.data == 'premium:continue')
+async def premium_continue(c: CallbackQuery):
+    await db.execute("UPDATE users SET status='premium_waiting' WHERE telegram_id=$1", c.from_user.id)
+    await notify_admins(f"💰 Demande premium\n\n👤 @{c.from_user.username or '-'}\n🆔 ID : {c.from_user.id}")
+    await update_flow(c, "✅ Votre demande premium a été envoyée. Un admin pourra vous recontacter si une place est disponible.")
+    await c.answer()
+
+@router.callback_query(F.data == 'premium:vip')
+async def vip_access(c: CallbackQuery):
+    await db.execute("UPDATE users SET status='vip_requested' WHERE telegram_id=$1", c.from_user.id)
+    await update_flow(c, "Vous avez déjà payé un VIP sur Telegram ? Vous pouvez bénéficier d’un accès coupe-file gratuit et rejoindre le groupe exclusif.\n\nConditions :\n• être dans le VIP ;\n• donner accès via notre bot ;\n• le VIP doit contenir plus de 20k vidéos.\n\nLes places sont limitées.", reply_markup=vip_info_kb())
+    await c.answer()
+
+@router.callback_query(F.data == 'vip:continue')
+async def vip_continue(c: CallbackQuery):
+    await db.execute("UPDATE users SET status='vip_waiting' WHERE telegram_id=$1", c.from_user.id)
+    await notify_admins(f"🎟 Demande VIP coupe-file\n\n👤 @{c.from_user.username or '-'}\n🆔 ID : {c.from_user.id}")
+    await update_flow(c, "Contactez @op75x15 avec la capture d’écran de cette conversation et les informations du VIP dans lequel vous êtes.")
+    await c.answer()
 
 # ---------- ADMIN PANEL ----------
 
@@ -573,7 +622,7 @@ async def app_decision(c: CallbackQuery):
         await db.execute("UPDATE applications SET status='rejected',admin_decision_by=$2,decision_at=now() WHERE id=$1", app_id, c.from_user.id)
         await db.execute("UPDATE users SET status='rejected' WHERE telegram_id=$1", user_id)
         try:
-            await bot.send_message(user_id, 'Votre profil ne correspond pas actuellement aux critères d’accès gratuit.\n\nUne proposition d’accès premium pourra éventuellement vous être envoyée ultérieurement.')
+            await bot.send_message(user_id, 'Votre profil ne correspond pas actuellement aux critères d’accès gratuit.\n\nUne proposition premium pourra éventuellement vous être envoyée ultérieurement.', reply_markup=no_content_kb())
         except Exception:
             pass
         await safe_mark_admin_message(c, '❌ Refusé')
@@ -603,7 +652,7 @@ async def rules(c: CallbackQuery):
         2: 'Le partage du lien entraîne une exclusion définitive.',
         3: 'Aucun lien externe n’est autorisé dans le groupe.',
         4: 'Vous devrez publier le volume déclaré afin de conserver votre accès.',
-        5: 'Les campagnes premium servent à financer la communauté et les futurs sondages.',
+        
     }
     await update_flow(c, texts.get(n, 'Règle'), reply_markup=rules_kb(n+1))
     await c.answer()
@@ -622,7 +671,7 @@ async def rules_done(c: CallbackQuery):
             creates_join_request=False,
         )
         await db.execute('INSERT INTO invite_links(telegram_id,chat_id,invite_link,expected_user_id,expires_at) VALUES($1,$2,$3,$4,$5)', c.from_user.id, int(main), invite.invite_link, c.from_user.id, datetime.now(timezone.utc)+timedelta(hours=6))
-        await update_flow(c, 'Félicitations.\n\nVotre accès a été pré-validé.\n\n⚠ Ce lien est personnel, limité à un seul usage et surveillé automatiquement.', reply_markup=url_kb('🔗 Rejoindre le groupe principal', invite.invite_link))
+        await update_flow(c, 'Félicitations.\n\nVotre accès a été validé.\n\n⚠ Ce lien est personnel, limité à un seul usage et surveillé automatiquement.', reply_markup=url_kb('🔗 Rejoindre le groupe principal', invite.invite_link))
     except Exception as e:
         await update_flow(c, f'Erreur création lien. Vérifiez que le bot est admin du groupe principal.\n\n{e}')
     await c.answer()
@@ -640,10 +689,10 @@ async def on_bot_chat_member(update: ChatMemberUpdated):
 
 async def ban_user(user_id: int, reason: str = 'ban'):
     await db.execute("UPDATE users SET banned=true,status='banned',updated_at=now() WHERE telegram_id=$1", user_id)
-    main = await get_setting('main_group', '')
-    if main:
+    rows = await db.fetch("SELECT chat_id FROM groups WHERE type IN ('main','publicity')")
+    for r in rows:
         try:
-            await bot.ban_chat_member(int(main), user_id)
+            await bot.ban_chat_member(int(r['chat_id']), user_id)
         except Exception:
             pass
     await db.log(reason, telegram_id=user_id)
@@ -669,7 +718,7 @@ async def on_new_members(m: Message):
         if member.is_bot:
             continue
         u = await db.fetchrow('SELECT status,declared_total,attempts,banned FROM users WHERE telegram_id=$1', member.id)
-        if not u or u['banned'] or u['status'] not in {'validated', 'temporary_member', 'failed_publication_1'}:
+        if not u or u['banned'] or u['status'] not in {'validated', 'temporary_member'}:
             await kick_user(m.chat.id, member.id, 'join_without_validation')
             continue
         await db.execute("UPDATE users SET status='temporary_member', joined_main_at=now(), first_media_at=NULL, valid_media_count=0, updated_at=now() WHERE telegram_id=$1", member.id)
@@ -866,7 +915,7 @@ async def admin_apps(c: CallbackQuery):
 @router.callback_query(F.data == 'admin:blacklist')
 async def admin_blacklist(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
-    rows = await db.fetch("SELECT telegram_id,username,status FROM users WHERE banned=true OR status IN ('failed_publication_1','failed_quota_24h') ORDER BY updated_at DESC LIMIT 20")
+    rows = await db.fetch("SELECT telegram_id,username,status FROM users WHERE banned=true OR status IN ('failed_no_activity','banned') ORDER BY updated_at DESC LIMIT 20")
     if not rows:
         text = 'Blacklist vide.'
     else:
@@ -908,18 +957,14 @@ async def monitor_members():
                     joined = u['joined_main_at']
                     if not joined:
                         continue
-                    # 1ère tentative : si aucun média valide après 4h = kick, l'utilisateur peut recommencer 1 fois.
-                    if u['attempts'] <= 1:
-                        if not u['first_media_at'] and now - joined > timedelta(hours=4):
-                            await kick_user(int(main), int(u['telegram_id']), 'kick_no_activity_4h')
-                            await db.execute("UPDATE users SET status='failed_publication_1', updated_at=now() WHERE telegram_id=$1", u['telegram_id'])
-                        elif now - joined > timedelta(hours=24) and (u['valid_media_count'] or 0) < (u['declared_total'] or 0):
-                            await kick_user(int(main), int(u['telegram_id']), 'kick_quota_24h')
-                            await db.execute("UPDATE users SET status='failed_quota_24h', updated_at=now() WHERE telegram_id=$1", u['telegram_id'])
-                    # 2ème tentative : quota complet sous 1h sinon ban définitif.
-                    else:
-                        if now - joined > timedelta(hours=1) and (u['valid_media_count'] or 0) < (u['declared_total'] or 0):
-                            await ban_user(int(u['telegram_id']), reason='ban_second_attempt_quota_failed')
+                    # Version actuelle : une seule chance.
+                    # Si aucun média valide après 30 minutes : kick + blacklist.
+                    if not u['first_media_at'] and now - joined > timedelta(minutes=30):
+                        await kick_user(int(main), int(u['telegram_id']), 'kick_no_activity_30min')
+                        await db.execute("UPDATE users SET status='failed_no_activity', banned=true, updated_at=now() WHERE telegram_id=$1", u['telegram_id'])
+                    # Si le quota complet n'est pas publié après 24h : ban définitif.
+                    elif now - joined > timedelta(hours=24) and (u['valid_media_count'] or 0) < (u['declared_total'] or 0):
+                        await ban_user(int(u['telegram_id']), reason='ban_quota_24h_failed')
         except Exception as e:
             await db.log('monitor_members_error', data={'error': str(e)}, level='error')
         await asyncio.sleep(60)

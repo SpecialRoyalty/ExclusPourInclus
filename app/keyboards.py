@@ -29,15 +29,16 @@ def profile_kb():
         [('📦 Fournisseur / Créateur', 'profile:supplier')],
         [('💾 Amateur / Collectionneur', 'profile:collector')],
         [('❌ Je n’ai pas de contenu', 'profile:none')],
+        [('⬅️ Retour', 'start:interested')],
     ])
 
 
 def ok_kb(callback='ok'):
-    return kb([[('✅ J’ai compris', callback)]])
+    return kb([[('✅ J’ai compris', callback)], [('⬅️ Retour', 'go:profile')]])
 
 
 def continue_kb(callback='go:profile'):
-    return kb([[('➡ Continuer', callback)]])
+    return kb([[('➡ Continuer', callback)], [('⬅️ Retour', 'start:interested')]])
 
 
 def confirm_kb():
@@ -45,7 +46,7 @@ def confirm_kb():
 
 
 def rules_kb(next_id: int):
-    if next_id <= 5:
+    if next_id <= 4:
         return kb([[('✅ J’ai compris', f'rule:{next_id}')]])
     return kb([[('✅ J’ai compris', 'rules:done')]])
 
@@ -128,3 +129,17 @@ def proposal_admin_kb(pid: int):
 
 def proposal_vote_kb(pid: int):
     return kb([[('✅ Oui', f'voteprop:{pid}:yes'), ('❌ Non', f'voteprop:{pid}:no')]])
+
+
+def no_content_kb():
+    return kb([
+        [('💰 Accès premium', 'premium:access')],
+        [('🎟 Je possède un VIP', 'premium:vip')],
+        [('⬅️ Retour', 'go:profile')],
+    ])
+
+def premium_info_kb():
+    return kb([[('💳 Continuer', 'premium:continue')], [('⬅️ Retour', 'profile:none')]])
+
+def vip_info_kb():
+    return kb([[('💳 Continuer', 'vip:continue')], [('⬅️ Retour', 'profile:none')]])
