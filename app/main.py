@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import Bot, Dispatcher, F, Router, BaseMiddleware
 from aiogram.enums import ChatMemberStatus
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -26,6 +26,24 @@ router = Router()
 dp.include_router(router)
 
 URL_RE = re.compile(r'(https?://|t\.me/|telegram\.me/|www\.|@[A-Za-z0-9_]{4,})', re.I)
+
+class BlockBannedMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user = getattr(event, 'from_user', None)
+        if user and not is_admin(user.id):
+            try:
+                row = await db.fetchrow('SELECT banned FROM users WHERE telegram_id=$1', user.id)
+                if row and row['banned']:
+                    if isinstance(event, CallbackQuery):
+                        await event.answer('Accès bloqué.', show_alert=True)
+                        return
+                    if isinstance(event, Message) and event.chat.type == 'private':
+                        await event.answer('Votre accès est bloqué.')
+                        return
+                    # En groupe, on laisse passer pour que le handler puisse supprimer/kick.
+            except Exception:
+                pass
+        return await handler(event, data)
 
 class Apply(StatesGroup):
     language = State()
@@ -50,6 +68,9 @@ class PotState(StatesGroup):
 
 def is_admin(uid: int) -> bool:
     return uid in config.admin_ids
+
+router.callback_query.middleware(BlockBannedMiddleware())
+router.message.middleware(BlockBannedMiddleware())
 
 async def ensure_user(obj: Message | CallbackQuery):
     u = obj.from_user
@@ -157,19 +178,11 @@ async def start(m: Message, state: FSMContext):
         replace=True,
     )
 
-@router.message(Command('admin'))
-async def admin_shortcut(m: Message, state: FSMContext):
-    if not is_admin(m.from_user.id):
-        return
-    await clean_user_message(m)
-    await state.clear()
-    await show_admin_panel(m.chat.id, m.from_user.id)
-
 @router.callback_query(F.data == 'start:not_interested')
 async def not_interested(c: CallbackQuery):
     await ensure_user(c)
     await db.execute("UPDATE users SET status='not_interested' WHERE telegram_id=$1", c.from_user.id)
-    await update_flow(c, 'Aucun problème.\n\nCertaines campagnes premium peuvent être ouvertes ultérieurement.')
+    await update_flow(c, 'Aucun problème.\n\nCertaines campagnes premium peuvent être ouvertes ultérieurement.', reply_markup=not_interested_kb())
     await c.answer()
 
 @router.callback_query(F.data == 'start:interested')
@@ -556,12 +569,6 @@ async def pub_now_cb(c: CallbackQuery):
     sent = await publish_to_targets()
     await c.answer(f'Publicité envoyée dans {sent} groupe(s).', show_alert=True)
 
-@router.message(Command('pub_now'))
-async def pub_now_cmd(m: Message):
-    if not is_admin(m.from_user.id): return
-    sent = await publish_to_targets()
-    await m.answer(f'Publicité envoyée dans {sent} groupe(s).')
-
 @router.callback_query(F.data == 'pub:auto_toggle')
 async def auto_toggle(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
@@ -773,6 +780,18 @@ async def perceptual_hash(file_id: str) -> str | None:
 @router.message(F.chat.type.in_({'group','supergroup'}))
 async def group_messages(m: Message):
     await register_detected_group(m.chat)
+    if m.from_user and not m.from_user.is_bot:
+        banned_row = await db.fetchrow('SELECT banned FROM users WHERE telegram_id=$1', m.from_user.id)
+        if banned_row and banned_row['banned']:
+            try:
+                await m.delete()
+            except Exception:
+                pass
+            try:
+                await bot.ban_chat_member(m.chat.id, m.from_user.id)
+            except Exception as e:
+                await db.log('banned_user_group_ban_failed', telegram_id=m.from_user.id, chat_id=m.chat.id, data={'error': str(e)}, level='error')
+            return
     main = await get_setting('main_group', '')
     if not main or str(m.chat.id) != str(main):
         return
@@ -905,33 +924,6 @@ async def admin_info(c: CallbackQuery):
     await c.answer()
 
 
-@router.message(Command('proposer'))
-async def propose(m: Message, state: FSMContext):
-    st = await user_status(m.from_user.id)
-    if st != 'member_validated':
-        await m.answer('Seuls les membres validés peuvent proposer.')
-        return
-    await m.answer('Nom de la créatrice/proposition ?')
-    await state.set_state(Proposal.name)
-
-@router.message(Proposal.name)
-async def prop_name(m: Message, state: FSMContext):
-    await state.update_data(name=(m.text or '').strip())
-    await m.answer('Lien de la plateforme ?')
-    await state.set_state(Proposal.link)
-
-@router.message(Proposal.link)
-async def prop_link(m: Message, state: FSMContext):
-    link = (m.text or '').strip()
-    if not URL_RE.search(link):
-        await m.answer('Merci d’envoyer un lien valide.')
-        return
-    data = await state.get_data()
-    pid = await db.fetchval('INSERT INTO proposals(proposer_id,name,platform_link) VALUES($1,$2,$3) RETURNING id', m.from_user.id, data['name'], link)
-    await notify_admins(f"📥 Nouvelle proposition\n\n👤 @{m.from_user.username or '-'}\n📦 Nom : {data['name']}\n🔗 Lien : {link}", reply_markup=proposal_admin_kb(pid))
-    await m.answer('Proposition envoyée aux admins.')
-    await state.clear()
-
 @router.callback_query(F.data.startswith('prop:'))
 async def prop_admin(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
@@ -968,29 +960,6 @@ async def vote_prop(c: CallbackQuery):
     except TelegramBadRequest:
         pass
     await c.answer('Vote enregistré.')
-
-@router.callback_query(F.data == 'admin:pot')
-async def admin_pot(c: CallbackQuery):
-    if not is_admin(c.from_user.id): return
-    balance = await get_setting('pot_balance', '0')
-    await update_flow(c, f'💰 Cagnotte actuelle : {balance}€\n\nUtilisez /set_pot 123 pour déclarer le nouveau montant disponible.', reply_markup=back_admin_kb())
-    await c.answer()
-
-@router.message(Command('set_pot'))
-async def set_pot_cmd(m: Message):
-    if not is_admin(m.from_user.id): return
-    parts = (m.text or '').split(maxsplit=1)
-    if len(parts) < 2:
-        await m.answer('Usage : /set_pot 123')
-        return
-    try:
-        amount = float(parts[1].replace(',', '.'))
-    except ValueError:
-        await m.answer('Montant invalide.')
-        return
-    await set_setting('pot_balance', str(amount))
-    await db.execute('INSERT INTO pot_transactions(amount,reason,created_by) VALUES($1,$2,$3)', amount, 'admin_set_balance', m.from_user.id)
-    await m.answer(f'✅ Cagnotte déclarée : {amount}€')
 
 # ---------- OTHER ADMIN ----------
 
@@ -1089,10 +1058,18 @@ async def monitor_members():
                     # Version actuelle : une seule chance.
                     # Si aucun média valide après 30 minutes : kick + blacklist.
                     if not u['first_media_at'] and now - joined > timedelta(minutes=30):
-                        await kick_user(int(main), int(u['telegram_id']), 'kick_no_activity_30min')
+                        try:
+                            await bot.send_message(int(u['telegram_id']), '❌ Aucune contribution détectée.\n\nVotre accès a été retiré automatiquement.')
+                        except Exception:
+                            pass
+                        await ban_user(int(u['telegram_id']), reason='ban_no_activity_30min')
                         await db.execute("UPDATE users SET status='failed_no_activity', banned=true, updated_at=now() WHERE telegram_id=$1", u['telegram_id'])
                     # Si le quota complet n'est pas publié après 24h : ban définitif.
                     elif now - joined > timedelta(hours=24) and (u['valid_media_count'] or 0) < (u['declared_total'] or 0):
+                        try:
+                            await bot.send_message(int(u['telegram_id']), '❌ Quota non respecté.\n\nVotre accès a été retiré définitivement.')
+                        except Exception:
+                            pass
                         await ban_user(int(u['telegram_id']), reason='ban_quota_24h_failed')
         except Exception as e:
             await db.log('monitor_members_error', data={'error': str(e)}, level='error')

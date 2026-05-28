@@ -15,6 +15,9 @@ def url_kb(text: str, url: str) -> InlineKeyboardMarkup:
 def start_kb():
     return kb([[('✅ Je suis intéressé', 'start:interested')], [('❌ Pas intéressé', 'start:not_interested')]])
 
+def not_interested_kb():
+    return kb([[('⬅️ Retour', 'start:interested')]])
+
 
 def languages_kb():
     return kb([
