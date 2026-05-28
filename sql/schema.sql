@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS groups (
   type TEXT NOT NULL DEFAULT 'detected' CHECK(type IN ('detected','pub','main')),
   active BOOLEAN DEFAULT TRUE,
   targeted BOOLEAN DEFAULT TRUE,
+  last_ad_message_id BIGINT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -146,6 +147,7 @@ UPDATE groups SET type='pub' WHERE type='publicity';
 ALTER TABLE groups ADD CONSTRAINT groups_type_check CHECK(type IN ('detected','pub','main'));
 ALTER TABLE groups ALTER COLUMN type SET DEFAULT 'detected';
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS targeted BOOLEAN DEFAULT TRUE;
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS last_ad_message_id BIGINT;
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS proof_type TEXT DEFAULT 'photo';
 
