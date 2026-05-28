@@ -70,18 +70,56 @@ async def notify_admins(text: str, **kwargs):
         except Exception:
             pass
 
+async def delete_previous_flow_message(user_id: int):
+    row = await db.fetchrow('SELECT flow_chat_id, flow_message_id FROM users WHERE telegram_id=$1', user_id)
+    if not row or not row['flow_chat_id'] or not row['flow_message_id']:
+        return
+    try:
+        await bot.delete_message(int(row['flow_chat_id']), int(row['flow_message_id']))
+    except Exception:
+        pass
+
+async def send_single_flow_message(user_id: int, chat_id: int, text: str, reply_markup=None):
+    await delete_previous_flow_message(user_id)
+    msg = await bot.send_message(chat_id, text, reply_markup=reply_markup)
+    await db.execute('UPDATE users SET flow_chat_id=$2, flow_message_id=$3 WHERE telegram_id=$1', user_id, chat_id, msg.message_id)
+    return msg
+
+async def update_flow_message(c: CallbackQuery, text: str, reply_markup=None):
+    try:
+        await c.message.edit_text(text, reply_markup=reply_markup)
+        await db.execute('UPDATE users SET flow_chat_id=$2, flow_message_id=$3 WHERE telegram_id=$1', c.from_user.id, c.message.chat.id, c.message.message_id)
+    except TelegramBadRequest:
+        await send_single_flow_message(c.from_user.id, c.message.chat.id, text, reply_markup=reply_markup)
+
 async def user_status(uid: int) -> str:
     return await db.fetchval('SELECT status FROM users WHERE telegram_id=$1', uid) or 'new'
 
 @router.message(Command('start'))
 async def start(m: Message, state: FSMContext):
     await ensure_user(m)
+    # Nettoie le /start utilisateur pour éviter plusieurs instances visibles.
+    try:
+        await m.delete()
+    except Exception:
+        pass
+
     u = await db.fetchrow('SELECT banned,status,attempts FROM users WHERE telegram_id=$1', m.from_user.id)
     if u and u['banned']:
-        await m.answer('Votre accès est bloqué.')
+        await send_single_flow_message(m.from_user.id, m.chat.id, 'Votre accès est bloqué.')
         return
+
     await state.clear()
-    await m.answer(
+
+    # Si l'utilisateur est admin, on affiche directement le panneau admin.
+    # Il n'a pas besoin de taper /admin.
+    if is_admin(m.from_user.id):
+        await send_single_flow_message(m.from_user.id, m.chat.id, 'Panneau admin', reply_markup=admin_panel_kb())
+        return
+
+    await send_single_flow_message(
+        m.from_user.id,
+        m.chat.id,
         'Bienvenue.\n\nVous êtes sur le point de rejoindre une communauté privée réservée aux profils capables d’apporter du contenu inédit.\n\nLe processus d’accès est sélectif afin de préserver la qualité du groupe.',
         reply_markup=start_kb()
     )
@@ -89,14 +127,14 @@ async def start(m: Message, state: FSMContext):
 @router.callback_query(F.data == 'start:not_interested')
 async def not_interested(c: CallbackQuery):
     await ensure_user(c)
-    await c.message.edit_text('Aucun problème.\n\nCertaines campagnes premium peuvent être ouvertes ultérieurement.')
+    await update_flow_message(c, 'Aucun problème.\n\nCertaines campagnes premium peuvent être ouvertes ultérieurement.')
     await c.answer()
 
 @router.callback_query(F.data == 'start:interested')
 async def interested(c: CallbackQuery, state: FSMContext):
     await ensure_user(c)
     await db.execute("UPDATE users SET status='interested' WHERE telegram_id=$1", c.from_user.id)
-    await c.message.edit_text('Veuillez choisir votre langue.', reply_markup=languages_kb())
+    await update_flow_message(c, 'Veuillez choisir votre langue.', reply_markup=languages_kb())
     await state.set_state(Apply.language)
     await c.answer()
 
@@ -104,12 +142,12 @@ async def interested(c: CallbackQuery, state: FSMContext):
 async def lang(c: CallbackQuery, state: FSMContext):
     language = c.data.split(':')[1]
     await db.execute("UPDATE users SET language=$2, status='language_chosen' WHERE telegram_id=$1", c.from_user.id, language)
-    await c.message.edit_text('Cette communauté est principalement francophone.\n\nMerci de répondre sérieusement aux prochaines étapes afin de préserver la qualité des accès.', reply_markup=ok_kb('go:profile'))
+    await update_flow_message(c, 'Cette communauté est principalement francophone.\n\nMerci de répondre sérieusement aux prochaines étapes afin de préserver la qualité des accès.', reply_markup=ok_kb('go:profile'))
     await c.answer()
 
 @router.callback_query(F.data == 'go:profile')
 async def ask_profile(c: CallbackQuery, state: FSMContext):
-    await c.message.edit_text('Quel profil correspond le mieux au vôtre ?', reply_markup=profile_kb())
+    await update_flow_message(c, 'Quel profil correspond le mieux au vôtre ?', reply_markup=profile_kb())
     await state.set_state(Apply.profile)
     await c.answer()
 
@@ -119,14 +157,14 @@ async def profile(c: CallbackQuery, state: FSMContext):
     await db.execute('UPDATE users SET profile_type=$2 WHERE telegram_id=$1', c.from_user.id, p)
     if p == 'none':
         await db.execute("UPDATE users SET status='premium_proposed' WHERE telegram_id=$1", c.from_user.id)
-        await c.message.edit_text('Les accès gratuits sont réservés aux membres capables de contribuer à la communauté.\n\nCertaines places premium payantes peuvent être ouvertes ultérieurement.')
+        await update_flow_message(c, 'Les accès gratuits sont réservés aux membres capables de contribuer à la communauté.\n\nCertaines places premium payantes peuvent être ouvertes ultérieurement.')
         return
     await state.update_data(profile_type=p)
     if p == 'supplier':
-        await c.message.edit_text('Combien de créatrices/personnes différentes possédez-vous approximativement ?')
+        await update_flow_message(c, 'Combien de créatrices/personnes différentes possédez-vous approximativement ?')
         await state.set_state(Apply.creators)
     else:
-        await c.message.edit_text('Combien de médias exclusifs possédez-vous approximativement ?')
+        await update_flow_message(c, 'Combien de médias exclusifs possédez-vous approximativement ?')
         await state.set_state(Apply.total)
     await c.answer()
 
@@ -167,18 +205,18 @@ async def videos(m: Message, state: FSMContext):
 @router.callback_query(F.data == 'quota:recap')
 async def quota_recap(c: CallbackQuery):
     u = await db.fetchrow('SELECT declared_total, declared_photos, declared_videos FROM users WHERE telegram_id=$1', c.from_user.id)
-    await c.message.edit_text(f"Récapitulatif :\n\n📦 Médias déclarés : {u['declared_total']}\n🖼 Photos : {u['declared_photos']}\n🎥 Vidéos : {u['declared_videos']}\n\nConfirmez-vous ces informations ?", reply_markup=confirm_kb())
+    await update_flow_message(c, f"Récapitulatif :\n\n📦 Médias déclarés : {u['declared_total']}\n🖼 Photos : {u['declared_photos']}\n🎥 Vidéos : {u['declared_videos']}\n\nConfirmez-vous ces informations ?", reply_markup=confirm_kb())
     await c.answer()
 
 @router.callback_query(F.data == 'quota:edit')
 async def quota_edit(c: CallbackQuery, state: FSMContext):
-    await c.message.edit_text('Combien de médias exclusifs possédez-vous approximativement ?')
+    await update_flow_message(c, 'Combien de médias exclusifs possédez-vous approximativement ?')
     await state.set_state(Apply.total)
     await c.answer()
 
 @router.callback_query(F.data == 'quota:confirm')
 async def quota_confirm(c: CallbackQuery, state: FSMContext):
-    await c.message.edit_text('Pour protéger les membres de la communauté, une vérification est nécessaire.\n\nVeuillez envoyer une preuve correspondant à l’exemple fourni par les admins.\n\nLes preuves incohérentes ou invalides peuvent entraîner un refus.')
+    await update_flow_message(c, 'Pour protéger les membres de la communauté, une vérification est nécessaire.\n\nVeuillez envoyer une preuve correspondant à l’exemple fourni par les admins.\n\nLes preuves incohérentes ou invalides peuvent entraîner un refus.')
     await state.set_state(Apply.proof)
     await c.answer()
 
@@ -238,27 +276,33 @@ async def rules(c: CallbackQuery):
         5: 'Les campagnes premium servent à financer la communauté et les futurs sondages.'
     }
     if n <= 5:
-        await c.message.edit_text(texts[n], reply_markup=rules_kb(n+1) if n < 5 else ok_kb('rules:done'))
+        await update_flow_message(c, texts[n], reply_markup=rules_kb(n+1) if n < 5 else ok_kb('rules:done'))
     await c.answer()
 
 @router.callback_query(F.data == 'rules:done')
 async def rules_done(c: CallbackQuery):
     chat_id = await get_setting('main_group')
     if not chat_id:
-        await c.message.edit_text('Le groupe principal n’est pas encore configuré. Contactez un admin.')
+        await update_flow_message(c, 'Le groupe principal n’est pas encore configuré. Contactez un admin.')
         return
     try:
         invite = await bot.create_chat_invite_link(int(chat_id), member_limit=1, expire_date=datetime.now(timezone.utc)+timedelta(hours=6), creates_join_request=False)
         await db.execute('INSERT INTO invite_links(telegram_id,chat_id,invite_link,expected_user_id,expires_at) VALUES($1,$2,$3,$4,$5)', c.from_user.id, int(chat_id), invite.invite_link, c.from_user.id, datetime.now(timezone.utc)+timedelta(hours=6))
-        await c.message.edit_text('Félicitations.\n\nVotre accès a été pré-validé.\n\n⚠ Ce lien est personnel, limité à un seul usage et surveillé automatiquement.\n\n' + invite.invite_link)
+        await update_flow_message(c, 'Félicitations.\n\nVotre accès a été pré-validé.\n\n⚠ Ce lien est personnel, limité à un seul usage et surveillé automatiquement.\n\n' + invite.invite_link)
     except Exception as e:
-        await c.message.edit_text(f'Erreur création lien. Vérifiez que le bot est admin du groupe principal. ({e})')
+        await update_flow_message(c, f'Erreur création lien. Vérifiez que le bot est admin du groupe principal. ({e})')
     await c.answer()
 
 @router.message(Command('admin'))
 async def admin(m: Message):
-    if not is_admin(m.from_user.id): return
-    await m.answer('Panneau admin', reply_markup=admin_panel_kb())
+    # Conservé comme raccourci, mais /start affiche déjà ce panneau aux admins.
+    if not is_admin(m.from_user.id):
+        return
+    try:
+        await m.delete()
+    except Exception:
+        pass
+    await send_single_flow_message(m.from_user.id, m.chat.id, 'Panneau admin', reply_markup=admin_panel_kb())
 
 @router.message(Command('migrate'))
 async def migrate(m: Message):
