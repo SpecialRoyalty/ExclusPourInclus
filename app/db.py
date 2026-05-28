@@ -1,7 +1,8 @@
 import json
-import asyncpg
 from pathlib import Path
 from typing import Any
+import asyncpg
+
 
 class Database:
     def __init__(self, url: str):
@@ -9,17 +10,17 @@ class Database:
         self.pool: asyncpg.Pool | None = None
 
     async def connect(self):
-        self.pool = await asyncpg.create_pool(self.url, min_size=1, max_size=5)
+        self.pool = await asyncpg.create_pool(self.url, min_size=1, max_size=8)
 
     async def close(self):
         if self.pool:
             await self.pool.close()
 
     async def migrate(self):
-        schema = Path(__file__).resolve().parents[1] / 'sql' / 'schema.sql'
         assert self.pool
+        schema = Path(__file__).resolve().parents[1] / 'sql' / 'schema.sql'
         async with self.pool.acquire() as conn:
-            await conn.execute(schema.read_text())
+            await conn.execute(schema.read_text(encoding='utf-8'))
 
     async def execute(self, query: str, *args):
         assert self.pool
@@ -44,5 +45,5 @@ class Database:
     async def log(self, event: str, telegram_id: int | None = None, chat_id: int | None = None, data: dict[str, Any] | None = None, level: str = 'info'):
         await self.execute(
             'INSERT INTO logs(level,event,telegram_id,chat_id,data) VALUES($1,$2,$3,$4,$5::jsonb)',
-            level, event, telegram_id, chat_id, json.dumps(data or {})
+            level, event, telegram_id, chat_id, json.dumps(data or {}, ensure_ascii=False),
         )
