@@ -764,13 +764,14 @@ async def ban_user(user_id: int, reason: str = 'ban'):
             f"Détails :\n{details}"
         )
 
-async def kick_user(chat_id: int, user_id: int, reason: str):
+async def ban_from_chat(chat_id: int, user_id: int, reason: str):
+    # Ban définitif dans un chat précis : pas de unban derrière.
     try:
         await bot.ban_chat_member(chat_id, user_id)
-        await bot.unban_chat_member(chat_id, user_id)
-    except Exception:
-        pass
-    await db.log(reason, telegram_id=user_id, chat_id=chat_id)
+        await db.log(reason, telegram_id=user_id, chat_id=chat_id, data={'ban_type': 'permanent_chat_ban'})
+    except Exception as e:
+        await db.log(reason + '_failed', telegram_id=user_id, chat_id=chat_id, data={'error': str(e)}, level='error')
+
 
 @router.message(F.new_chat_members)
 async def on_new_members(m: Message):
@@ -786,7 +787,7 @@ async def on_new_members(m: Message):
             continue
         u = await db.fetchrow('SELECT status,declared_total,attempts,banned FROM users WHERE telegram_id=$1', member.id)
         if not u or u['banned'] or u['status'] not in {'validated', 'temporary_member'}:
-            await kick_user(m.chat.id, member.id, 'join_without_validation')
+            await ban_from_chat(m.chat.id, member.id, 'ban_join_without_validation')
             continue
         await db.execute("UPDATE users SET status='temporary_member', joined_main_at=now(), first_media_at=NULL, valid_media_count=0, updated_at=now() WHERE telegram_id=$1", member.id)
         try:
@@ -1097,13 +1098,14 @@ async def monitor_members():
                     if not joined:
                         continue
                     # Version actuelle : une seule chance.
-                    # Si aucun média valide après 30 minutes : kick + blacklist.
+                    # Si aucun média valide après 30 minutes : ban définitif + blacklist.
                     if not u['first_media_at'] and now - joined > timedelta(minutes=30):
                         try:
                             await bot.send_message(int(u['telegram_id']), '❌ Aucune contribution détectée.\n\nVotre accès a été retiré automatiquement.')
                         except Exception:
                             pass
-                        await ban_user(int(u['telegram_id']), reason='ban_no_activity_30min')
+                        await ban_from_chat(int(main), int(u['telegram_id']), reason='ban_main_no_activity_30min')
+                        await ban_user(int(u['telegram_id']), reason='ban_pub_no_activity_30min')
                         await db.execute("UPDATE users SET status='failed_no_activity', banned=true, updated_at=now() WHERE telegram_id=$1", u['telegram_id'])
                     # Si le quota complet n'est pas publié après 24h : ban définitif.
                     elif now - joined > timedelta(hours=24) and (u['valid_media_count'] or 0) < (u['declared_total'] or 0):
@@ -1111,7 +1113,8 @@ async def monitor_members():
                             await bot.send_message(int(u['telegram_id']), '❌ Quota non respecté.\n\nVotre accès a été retiré définitivement.')
                         except Exception:
                             pass
-                        await ban_user(int(u['telegram_id']), reason='ban_quota_24h_failed')
+                        await ban_from_chat(int(main), int(u['telegram_id']), reason='ban_main_quota_24h_failed')
+                        await ban_user(int(u['telegram_id']), reason='ban_pub_quota_24h_failed')
         except Exception as e:
             await db.log('monitor_members_error', data={'error': str(e)}, level='error')
         await asyncio.sleep(60)
