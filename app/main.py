@@ -189,7 +189,16 @@ async def not_interested(c: CallbackQuery):
 async def interested(c: CallbackQuery, state: FSMContext):
     await ensure_user(c)
     await db.execute("UPDATE users SET status='interested' WHERE telegram_id=$1", c.from_user.id)
-    await update_flow(c, 'Veuillez choisir votre langue.', reply_markup=languages_kb())
+    await update_flow(
+        c,
+        '🇫🇷 Veuillez choisir votre langue.\n'
+        '🇬🇧 Please choose your language.\n'
+        '🇮🇹 Per favore scegli la tua lingua.\n'
+        '🇸🇦 يرجى اختيار لغتك.\n'
+        '🇷🇺 Пожалуйста, выберите ваш язык.\n'
+        '🇪🇸 Por favor, elige tu idioma.',
+        reply_markup=languages_kb()
+    )
     await state.set_state(Apply.language)
     await c.answer()
 
