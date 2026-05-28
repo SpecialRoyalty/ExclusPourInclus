@@ -40,7 +40,7 @@ class BlockBannedMiddleware(BaseMiddleware):
                     if isinstance(event, Message) and event.chat.type == 'private':
                         await event.answer('Votre accès est bloqué.')
                         return
-                    # En groupe, on laisse passer pour que le handler puisse supprimer/kick.
+                    # En groupe, on laisse passer pour que le handler puisse supprimer/bannir.
             except Exception:
                 pass
         return await handler(event, data)
@@ -58,12 +58,12 @@ class AdminMedia(StatesGroup):
 class AdminText(StatesGroup):
     waiting_text = State()
 
-class Proposal(StatesGroup):
-    name = State()
-    link = State()
 
-class PotState(StatesGroup):
-    set_balance = State()
+class PaymentProof(StatesGroup):
+    waiting_proof = State()
+
+class PaymentReject(StatesGroup):
+    waiting_reason = State()
 
 
 def is_admin(uid: int) -> bool:
@@ -265,7 +265,7 @@ async def apply_total(m: Message, state: FSMContext):
     await state.update_data(total=n)
     data = await state.get_data()
     await db.execute(
-        "UPDATE users SET declared_total=$2, declared_photos=0, declared_videos=0, status='profile_filled' WHERE telegram_id=$1",
+        "UPDATE users SET declared_total=$2, status='profile_filled' WHERE telegram_id=$1",
         m.from_user.id, n,
     )
     await send_flow(
@@ -329,27 +329,161 @@ async def apply_proof(m: Message, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(F.data == 'premium:access')
-async def premium_access(c: CallbackQuery):
-    await db.execute("UPDATE users SET status='premium_requested' WHERE telegram_id=$1", c.from_user.id)
+def parse_money_value(raw: str) -> float:
+    if not raw:
+        return 0.0
+    cleaned = raw.replace(',', '.').replace('€', '').replace('$', '').strip()
+    match = re.search(r'\d+(?:\.\d+)?', cleaned)
+    if not match:
+        return 0.0
+    try:
+        return float(match.group(0))
+    except Exception:
+        return 0.0
+
+async def premium_text() -> str:
     price = await get_setting('premium_price', 'à confirmer')
     paypal = await get_setting('paypal_link', '')
     usdt = await get_setting('usdt_address', '')
-    text = f"Les accès premium permettent un accès sans contribution obligatoire.\n\nPrix premium : {price}\n"
+    lines = [
+        '💰 Accès premium',
+        '',
+        f'Prix : {price}',
+        '',
+        'Paiement :',
+    ]
     if paypal:
-        text += f"\nPayPal : {paypal}"
+        lines.append(f'PayPal : {paypal}')
     if usdt:
-        text += f"\nUSDT : {usdt}"
-    text += "\n\nLes places premium sont limitées."
-    await update_flow(c, text, reply_markup=premium_info_kb())
+        lines.append(f'USDT TRC20 : {usdt}')
+    if not paypal and not usdt:
+        lines.append('Aucun moyen de paiement configuré pour le moment.')
+    lines += [
+        '',
+        'Après paiement, cliquez sur le bouton ci-dessous et envoyez une capture/preuve de paiement.',
+    ]
+    return '\n'.join(lines)
+
+@router.callback_query(F.data == 'premium:access')
+async def premium_access(c: CallbackQuery):
+    await db.execute("UPDATE users SET status='premium_requested' WHERE telegram_id=$1", c.from_user.id)
+    await update_flow(c, await premium_text(), reply_markup=premium_info_kb())
     await c.answer()
 
-@router.callback_query(F.data == 'premium:continue')
-async def premium_continue(c: CallbackQuery):
-    await db.execute("UPDATE users SET status='premium_waiting' WHERE telegram_id=$1", c.from_user.id)
-    await notify_admins(f"💰 Demande premium\n\n👤 @{c.from_user.username or '-'}\n🆔 ID : {c.from_user.id}")
-    await update_flow(c, "✅ Votre demande premium a été envoyée. Un admin pourra vous recontacter si une place est disponible.")
+@router.callback_query(F.data == 'premium:proof')
+async def premium_proof(c: CallbackQuery, state: FSMContext):
+    await db.execute("UPDATE users SET status='premium_payment_proof_waiting' WHERE telegram_id=$1", c.from_user.id)
+    await update_flow(c, 'Envoyez maintenant votre preuve de paiement : capture d’écran, image ou document.\n\nUn admin vérifiera ensuite votre paiement.')
+    await state.set_state(PaymentProof.waiting_proof)
     await c.answer()
+
+@router.message(PaymentProof.waiting_proof)
+async def receive_payment_proof(m: Message, state: FSMContext):
+    file_id = None
+    proof_type = 'photo'
+    if m.photo:
+        file_id = m.photo[-1].file_id
+        proof_type = 'photo'
+    elif m.document:
+        file_id = m.document.file_id
+        proof_type = 'document'
+    if not file_id:
+        await m.answer('Merci d’envoyer une image ou un document comme preuve de paiement.')
+        return
+
+    price = await get_setting('premium_price', '')
+    amount = parse_money_value(price)
+    payment_id = await db.fetchval(
+        "INSERT INTO payments(telegram_id,amount,status,proof_file_id,proof_type) VALUES($1,$2,'pending',$3,$4) RETURNING id",
+        m.from_user.id, amount, file_id, proof_type,
+    )
+    await db.execute("UPDATE users SET status='premium_payment_pending' WHERE telegram_id=$1", m.from_user.id)
+
+    caption = (
+        f"💰 Preuve de paiement premium\n\n"
+        f"👤 Utilisateur : @{m.from_user.username or '-'}\n"
+        f"🆔 ID : {m.from_user.id}\n"
+        f"💵 Prix : {price or 'non configuré'}\n"
+        f"🧾 Paiement ID : {payment_id}"
+    )
+    for aid in config.admin_ids:
+        try:
+            if proof_type == 'photo':
+                await bot.send_photo(aid, file_id, caption=caption, reply_markup=admin_payment_kb(payment_id, m.from_user.id))
+            else:
+                await bot.send_document(aid, file_id, caption=caption, reply_markup=admin_payment_kb(payment_id, m.from_user.id))
+        except Exception:
+            await bot.send_message(aid, caption, reply_markup=admin_payment_kb(payment_id, m.from_user.id))
+
+    await send_flow(m.from_user.id, m.chat.id, '✅ Votre preuve de paiement a été envoyée aux admins. Vous serez notifié après vérification.')
+    await state.clear()
+
+@router.callback_query(F.data.startswith('pay:'))
+async def payment_decision(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id):
+        await c.answer('Admin uniquement', show_alert=True); return
+    _, action, payment_id, user_id = c.data.split(':')
+    payment_id, user_id = int(payment_id), int(user_id)
+    if action == 'approve':
+        await db.execute("UPDATE payments SET status='validated', decided_at=now() WHERE id=$1", payment_id)
+        amount = await db.fetchval('SELECT amount FROM payments WHERE id=$1', payment_id) or 0
+        if float(amount) > 0:
+            await db.execute('INSERT INTO pot_transactions(amount, reason, created_by) VALUES($1,$2,$3)', amount, f'premium_payment_{payment_id}', c.from_user.id)
+            old = parse_money_value(await get_setting('pot_balance', '0'))
+            await set_setting('pot_balance', str(round(old + float(amount), 2)))
+        await grant_premium_access(user_id)
+        await safe_mark_admin_message(c, '✅ Paiement validé')
+        await c.answer('Paiement validé.', show_alert=True)
+    elif action == 'reject':
+        await state.update_data(payment_id=payment_id, user_id=user_id, admin_message_chat_id=c.message.chat.id, admin_message_id=c.message.message_id)
+        await c.message.answer('Motif du refus ? Envoyez le message à transmettre à l’utilisateur.')
+        await state.set_state(PaymentReject.waiting_reason)
+        await c.answer()
+
+@router.message(PaymentReject.waiting_reason)
+async def payment_reject_reason(m: Message, state: FSMContext):
+    if not is_admin(m.from_user.id): return
+    data = await state.get_data()
+    payment_id = int(data.get('payment_id'))
+    user_id = int(data.get('user_id'))
+    reason = (m.text or '').strip() or 'Preuve de paiement refusée.'
+    await db.execute("UPDATE payments SET status='rejected', decided_at=now() WHERE id=$1", payment_id)
+    await db.execute("UPDATE users SET status='premium_payment_rejected' WHERE telegram_id=$1", user_id)
+    try:
+        await bot.send_message(user_id, f'❌ Votre preuve de paiement a été refusée.\n\nMotif : {reason}\n\nVous pouvez renvoyer une nouvelle preuve si nécessaire.', reply_markup=no_content_kb())
+    except Exception:
+        pass
+    try:
+        await bot.delete_message(int(data.get('admin_message_chat_id')), int(data.get('admin_message_id')))
+    except Exception:
+        pass
+    await m.answer('✅ Refus envoyé à l’utilisateur.')
+    await state.clear()
+
+async def grant_premium_access(user_id: int):
+    main = await get_setting('main_group', '')
+    await db.execute("UPDATE users SET status='premium_validated', updated_at=now() WHERE telegram_id=$1", user_id)
+    if not main:
+        try:
+            await bot.send_message(user_id, '✅ Paiement validé. Le groupe principal n’est pas encore configuré, un admin vous recontactera.')
+        except Exception:
+            pass
+        return
+    try:
+        invite = await bot.create_chat_invite_link(
+            int(main),
+            member_limit=1,
+            expire_date=datetime.now(timezone.utc) + timedelta(hours=6),
+            creates_join_request=False,
+        )
+        await db.execute('INSERT INTO invite_links(telegram_id,chat_id,invite_link,expected_user_id,expires_at) VALUES($1,$2,$3,$4,$5)', user_id, int(main), invite.invite_link, user_id, datetime.now(timezone.utc)+timedelta(hours=6))
+        await bot.send_message(user_id, '✅ Paiement validé.\n\nVoici votre lien personnel, limité à un seul usage et valable 6h.', reply_markup=url_kb('🔗 Rejoindre le groupe principal', invite.invite_link))
+    except Exception as e:
+        await db.log('premium_invite_failed', telegram_id=user_id, data={'error': str(e)}, level='error')
+        try:
+            await bot.send_message(user_id, '✅ Paiement validé, mais le lien n’a pas pu être généré automatiquement. Un admin vous recontactera.')
+        except Exception:
+            pass
 
 @router.callback_query(F.data == 'premium:vip')
 async def vip_access(c: CallbackQuery):
@@ -395,7 +529,6 @@ async def image_set(c: CallbackQuery, state: FSMContext):
         'ad_image_file_id': 'publicité',
         'welcome_image_file_id': 'accueil bot',
         'proof_example_image_file_id': 'exemple preuve',
-        'premium_image_file_id': 'campagne premium',
     }
     await state.update_data(setting_key=key)
     await update_flow(c, f'Envoyez maintenant l’image à utiliser pour : {labels.get(key, key)}.')
@@ -437,7 +570,6 @@ async def image_preview(c: CallbackQuery):
         ('Image publicité', 'ad_image_file_id'),
         ('Image accueil', 'welcome_image_file_id'),
         ('Image preuve', 'proof_example_image_file_id'),
-        ('Image premium', 'premium_image_file_id'),
     ]
     sent = 0
     for label, key in keys:
@@ -652,7 +784,7 @@ async def app_decision(c: CallbackQuery):
         await db.execute("UPDATE applications SET status='rejected',admin_decision_by=$2,decision_at=now() WHERE id=$1", app_id, c.from_user.id)
         await db.execute("UPDATE users SET status='rejected' WHERE telegram_id=$1", user_id)
         try:
-            await bot.send_message(user_id, 'Votre profil ne correspond pas actuellement aux critères d’accès gratuit.\n\nUne proposition premium pourra éventuellement vous être envoyée ultérieurement.', reply_markup=no_content_kb())
+            await bot.send_message(user_id, 'Votre profil ne correspond pas actuellement aux critères d’accès gratuit.\n\nVous pouvez demander un accès premium si cette option est disponible.', reply_markup=no_content_kb())
         except Exception:
             pass
         await safe_mark_admin_message(c, '❌ Refusé')
@@ -815,9 +947,20 @@ async def on_new_members(m: Message):
         if member.is_bot:
             continue
         u = await db.fetchrow('SELECT status,declared_total,attempts,banned FROM users WHERE telegram_id=$1', member.id)
-        if not u or u['banned'] or u['status'] not in {'validated', 'temporary_member'}:
+        if not u or u['banned'] or u['status'] not in {'validated', 'temporary_member', 'premium_validated'}:
             await ban_from_chat(m.chat.id, member.id, 'ban_join_without_validation')
             continue
+        if u['status'] == 'premium_validated':
+            await db.execute("UPDATE users SET status='member_validated', joined_main_at=now(), updated_at=now() WHERE telegram_id=$1", member.id)
+            try:
+                msg = await bot.send_message(m.chat.id, f"Bienvenue @{member.username or member.first_name}.\n\n✅ Accès premium validé.")
+                await asyncio.sleep(180)
+                try: await bot.delete_message(m.chat.id, msg.message_id)
+                except Exception: pass
+            except Exception:
+                pass
+            continue
+
         await db.execute("UPDATE users SET status='temporary_member', joined_main_at=now(), first_media_at=NULL, valid_media_count=0, updated_at=now() WHERE telegram_id=$1", member.id)
         try:
             msg = await bot.send_message(m.chat.id, f"Bienvenue @{member.username or member.first_name}.\n\n📦 Déclaration : {u['declared_total']} médias.\n\nVous devez maintenant publier les médias déclarés lors de votre candidature.\n\n⚠ Les doublons, reposts ou contenus déjà présents ne seront pas comptabilisés.")
@@ -913,7 +1056,7 @@ async def group_messages(m: Message):
                 pass
             await db.log('quota_completed', telegram_id=uid, chat_id=m.chat.id, data={'total': total, 'valid': valid})
 
-# ---------- PROPOSALS / CAGNOTTE ----------
+# ---------- PAYMENTS / MODERATION ----------
 
 @router.callback_query(F.data == 'admin:payments')
 async def admin_payments(c: CallbackQuery):
@@ -1000,43 +1143,6 @@ async def admin_info(c: CallbackQuery):
     await c.answer()
 
 
-@router.callback_query(F.data.startswith('prop:'))
-async def prop_admin(c: CallbackQuery):
-    if not is_admin(c.from_user.id): return
-    _, action, pid = c.data.split(':')
-    pid = int(pid)
-    p = await db.fetchrow('SELECT * FROM proposals WHERE id=$1', pid)
-    if not p:
-        await c.answer('Proposition introuvable', show_alert=True); return
-    if action == 'reject':
-        await db.execute("UPDATE proposals SET status='rejected',closed_at=now() WHERE id=$1", pid)
-        await c.message.edit_text('Proposition refusée.')
-    elif action == 'publish':
-        main = await get_setting('main_group', '')
-        if not main:
-            await c.answer('Groupe principal non défini', show_alert=True); return
-        msg = await bot.send_message(int(main), f"📊 Vote communautaire\n\nCréatrice proposée :\n{p['name']}\n\nSouhaitez-vous ouvrir une campagne communautaire pour cette proposition ?", reply_markup=proposal_vote_kb(pid))
-        await db.execute("UPDATE proposals SET status='voting', message_id=$2 WHERE id=$1", pid, msg.message_id)
-        await c.message.edit_text('Vote publié.')
-    await c.answer()
-
-@router.callback_query(F.data.startswith('voteprop:'))
-async def vote_prop(c: CallbackQuery):
-    _, pid, vote = c.data.split(':')
-    pid = int(pid)
-    st = await user_status(c.from_user.id)
-    if st != 'member_validated':
-        await c.answer('Seuls les membres validés peuvent voter.', show_alert=True); return
-    await db.execute('INSERT INTO proposal_votes(proposal_id,voter_id,vote) VALUES($1,$2,$3) ON CONFLICT(proposal_id,voter_id) DO UPDATE SET vote=$3, created_at=now()', pid, c.from_user.id, vote)
-    counts = await db.fetchrow("SELECT count(*) FILTER (WHERE vote='yes') yes, count(*) FILTER (WHERE vote='no') no FROM proposal_votes WHERE proposal_id=$1", pid)
-    await db.execute('UPDATE proposals SET yes_count=$2,no_count=$3 WHERE id=$1', pid, counts['yes'], counts['no'])
-    p = await db.fetchrow('SELECT * FROM proposals WHERE id=$1', pid)
-    try:
-        await c.message.edit_text(f"📊 Vote communautaire\n\nCréatrice proposée :\n{p['name']}\n\n✅ Oui : {counts['yes']}\n❌ Non : {counts['no']}\n\nSouhaitez-vous ouvrir une campagne communautaire pour cette proposition ?", reply_markup=proposal_vote_kb(pid))
-    except TelegramBadRequest:
-        pass
-    await c.answer('Vote enregistré.')
-
 # ---------- OTHER ADMIN ----------
 
 @router.callback_query(F.data == 'admin:stats')
@@ -1085,17 +1191,6 @@ async def admin_logs(c: CallbackQuery):
             lines.append(f"{icon} {r['event']} | user:{r['telegram_id'] or '-'} | chat:{r['chat_id'] or '-'}")
         text = '🧾 Logs récents\n\n' + '\n'.join(lines)
     await update_flow(c, text, reply_markup=moderation_menu_kb())
-    await c.answer()
-
-@router.callback_query(F.data == 'admin:proposals')
-async def admin_proposals(c: CallbackQuery):
-    if not is_admin(c.from_user.id): return
-    rows = await db.fetch("SELECT id,name,status,yes_count,no_count FROM proposals ORDER BY created_at DESC LIMIT 10")
-    if not rows:
-        text = 'Aucune proposition.'
-    else:
-        text = '🗳 Propositions\n\n' + '\n'.join([f"#{r['id']} {r['name']} | {r['status']} | ✅{r['yes_count']} ❌{r['no_count']}" for r in rows])
-    await update_flow(c, text, reply_markup=back_admin_kb())
     await c.answer()
 
 @router.callback_query(F.data == 'admin:settings')

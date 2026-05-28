@@ -84,7 +84,6 @@ def images_menu_kb():
         [('🖼 Image publicité', 'image:set:ad_image_file_id')],
         [('👋 Image accueil bot', 'image:set:welcome_image_file_id')],
         [('✅ Image exemple preuve', 'image:set:proof_example_image_file_id')],
-        [('💰 Image campagne premium', 'image:set:premium_image_file_id')],
         [('👁 Prévisualiser images', 'image:preview')],
         [('🗑 Supprimer image', 'image:delete_menu')],
         [('⬅️ Retour panel', 'admin:home')],
@@ -94,7 +93,7 @@ def images_menu_kb():
 def image_delete_kb():
     return kb([
         [('🗑 Pub', 'image:delete:ad_image_file_id'), ('🗑 Accueil', 'image:delete:welcome_image_file_id')],
-        [('🗑 Preuve', 'image:delete:proof_example_image_file_id'), ('🗑 Premium', 'image:delete:premium_image_file_id')],
+        [('🗑 Preuve', 'image:delete:proof_example_image_file_id')],
         [('⬅️ Retour images', 'admin:images')],
     ])
 
@@ -126,15 +125,6 @@ def admin_application_kb(app_id: int, user_id: int):
     ])
 
 
-def proposal_admin_kb(pid: int):
-    return kb([[('✅ Publier vote', f'prop:publish:{pid}'), ('❌ Refuser', f'prop:reject:{pid}')]])
-
-
-def proposal_vote_kb(pid: int):
-    return kb([[('✅ Oui', f'voteprop:{pid}:yes'), ('❌ Non', f'voteprop:{pid}:no')]])
-
-
-
 def payments_menu_kb():
     return kb([
         [('💵 Prix premium', 'text:set:premium_price')],
@@ -161,7 +151,13 @@ def no_content_kb():
     ])
 
 def premium_info_kb():
-    return kb([[('💳 Continuer', 'premium:continue')], [('⬅️ Retour', 'profile:none')]])
+    return kb([[('📸 Envoyer preuve de paiement', 'premium:proof')], [('⬅️ Retour', 'profile:none')]])
+
+def admin_payment_kb(payment_id: int, user_id: int):
+    return kb([
+        [('✅ Valider paiement', f'pay:approve:{payment_id}:{user_id}')],
+        [('❌ Refuser paiement', f'pay:reject:{payment_id}:{user_id}')],
+    ])
 
 def vip_info_kb():
     return kb([[('💳 Continuer', 'vip:continue')], [('⬅️ Retour', 'profile:none')]])
