@@ -689,38 +689,79 @@ async def on_bot_chat_member(update: ChatMemberUpdated):
 
 
 async def ban_user(user_id: int, reason: str = 'ban'):
-    # Blacklist en base + tentative de bannissement dans TOUS les groupes détectés actifs.
-    # Important : Telegram ne permet pas à un bot de lister tous les groupes où il est admin.
-    # Le bot peut bannir uniquement dans les groupes déjà détectés/enregistrés en base.
+    # Blacklist en base + bannissement dans tous les groupes détectés actifs.
+    # Correction importante : Telegram refuse de retirer le créateur/propriétaire d'un groupe.
+    # On vérifie donc le statut de la cible AVANT de bannir, et on log précisément la cause.
     await db.execute("UPDATE users SET banned=true,status='banned',updated_at=now() WHERE telegram_id=$1", user_id)
     rows = await db.fetch("SELECT chat_id,title,type FROM groups WHERE active=true")
     if not rows:
         await db.log(reason + '_no_groups_registered', telegram_id=user_id, level='warning')
-        await notify_admins(f"⚠️ Ban utilisateur {user_id} : aucun groupe détecté en base. Ajoutez/envoyez un message dans les groupes pour les enregistrer.")
+        await notify_admins(f"⚠️ Ban utilisateur {user_id} : aucun groupe détecté en base. Ajoutez le bot dans les groupes puis vérifiez le menu Groupes.")
         return
+
     ok = 0
+    skipped = 0
     failed = 0
     errors = []
+
     for r in rows:
         chat_id = int(r['chat_id'])
+        title = r['title'] or str(chat_id)
+        group_type = r['type']
+        status = 'unknown'
         try:
+            # 1) Vérifier que le bot a le droit de bannir dans CE groupe.
+            bot_member = await bot.get_chat_member(chat_id, bot.id)
+            if not bool(getattr(bot_member, 'can_restrict_members', False)):
+                skipped += 1
+                msg = f"{title}: bot sans permission de bannir"
+                errors.append(msg)
+                await db.log('group_ban_skipped_no_permission', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'group_type': group_type, 'title': title}, level='warning')
+                continue
+
+            # 2) Vérifier le statut de la personne visée.
+            # Si Telegram dit creator/owner, on ne tente pas le ban : c'est impossible.
+            try:
+                target_member = await bot.get_chat_member(chat_id, user_id)
+                status = getattr(target_member, 'status', 'unknown')
+                if status == ChatMemberStatus.CREATOR:
+                    skipped += 1
+                    msg = f"{title}: impossible, l'utilisateur est propriétaire/créateur de ce groupe"
+                    errors.append(msg)
+                    await db.log('group_ban_skipped_owner', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'status': status, 'group_type': group_type, 'title': title}, level='warning')
+                    continue
+                if status == ChatMemberStatus.ADMINISTRATOR:
+                    skipped += 1
+                    msg = f"{title}: impossible, l'utilisateur est admin du groupe"
+                    errors.append(msg)
+                    await db.log('group_ban_skipped_admin', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'status': status, 'group_type': group_type, 'title': title}, level='warning')
+                    continue
+            except Exception as member_error:
+                # Si get_chat_member échoue, on tente quand même le ban : Telegram peut bannir un utilisateur non-présent.
+                status = f"member_check_failed: {member_error}"
+
+            # 3) Bannir.
             await bot.ban_chat_member(chat_id, user_id)
             ok += 1
-            await db.log('group_ban_success', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'group_type': r['type'], 'title': r['title']})
+            await db.log('group_ban_success', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'status_before': status, 'group_type': group_type, 'title': title})
         except Exception as e:
             failed += 1
             err = str(e)
-            errors.append(f"{r['title'] or chat_id}: {err}")
-            await db.log('group_ban_failed', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'error': err, 'group_type': r['type'], 'title': r['title']}, level='error')
-    await db.log(reason, telegram_id=user_id, data={'groups_ok': ok, 'groups_failed': failed})
-    if failed:
-        details = '\n'.join(errors[:5])
+            # Message plus clair pour le cas fréquent Telegram : can't remove chat owner.
+            if "can't remove chat owner" in err.lower():
+                err = "Telegram refuse : l'utilisateur est propriétaire/créateur de ce groupe, ou Telegram le voit comme tel. Impossible de le retirer par bot."
+            errors.append(f"{title}: {err}")
+            await db.log('group_ban_failed', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'error': err, 'status_before': status, 'group_type': group_type, 'title': title}, level='error')
+
+    await db.log(reason, telegram_id=user_id, data={'groups_ok': ok, 'groups_skipped': skipped, 'groups_failed': failed})
+    if failed or skipped:
+        details = '\n'.join(errors[:8])
         await notify_admins(
             f"⚠️ Ban partiel pour {user_id}\n\n"
             f"✅ Groupes bannis : {ok}\n"
+            f"⏭️ Groupes ignorés : {skipped}\n"
             f"❌ Échecs : {failed}\n\n"
-            f"Causes possibles : bot pas admin, permission bannir absente, groupe non accessible.\n\n"
-            f"{details}"
+            f"Détails :\n{details}"
         )
 
 async def kick_user(chat_id: int, user_id: int, reason: str):
