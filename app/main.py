@@ -334,7 +334,12 @@ async def apply_proof(m: Message, state: FSMContext):
                 await bot.send_document(aid, file_id, caption=caption, reply_markup=admin_application_kb(app_id, m.from_user.id))
         except Exception:
             await bot.send_message(aid, caption, reply_markup=admin_application_kb(app_id, m.from_user.id))
-    await send_flow(m.from_user.id, m.chat.id, 'Votre candidature a été envoyée aux admins. Vous serez notifié après décision.')
+    await send_flow(
+        m.from_user.id,
+        m.chat.id,
+        '🤖 Nos bots analysent actuellement vos données, veuillez patienter...\n\n'
+        '💡 Le saviez-vous ? Aucun traitement humain n’est nécessaire grâce à nos systèmes automatisés et un peu d’IA.'
+    )
     await state.clear()
 
 
