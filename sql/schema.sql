@@ -139,5 +139,8 @@ INSERT INTO settings(key,value) VALUES
 ('ad_text', '🔒 Communauté privée francophone\n\n• Accès sélectif\n• Contribution obligatoire\n• Vérification manuelle\n\nLes candidatures sont limitées.'),
 ('auto_pub_enabled', '0'),
 ('auto_pub_interval_minutes', '10'),
-('pot_balance', '0')
+('pot_balance', '0'),
+('premium_price', ''),
+('paypal_link', ''),
+('usdt_address', '')
 ON CONFLICT(key) DO NOTHING;
