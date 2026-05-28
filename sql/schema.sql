@@ -12,8 +12,6 @@ CREATE TABLE IF NOT EXISTS users (
   status TEXT DEFAULT 'new',
   profile_type TEXT,
   declared_total INT DEFAULT 0,
-  declared_photos INT DEFAULT 0,
-  declared_videos INT DEFAULT 0,
   attempts INT DEFAULT 0,
   joined_main_at TIMESTAMPTZ,
   first_media_at TIMESTAMPTZ,
@@ -82,26 +80,6 @@ CREATE TABLE IF NOT EXISTS logs (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS proposals (
-  id BIGSERIAL PRIMARY KEY,
-  proposer_id BIGINT REFERENCES users(telegram_id) ON DELETE SET NULL,
-  name TEXT NOT NULL,
-  platform_link TEXT NOT NULL,
-  status TEXT DEFAULT 'pending_admin',
-  message_id BIGINT,
-  yes_count INT DEFAULT 0,
-  no_count INT DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  closed_at TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS proposal_votes (
-  proposal_id BIGINT REFERENCES proposals(id) ON DELETE CASCADE,
-  voter_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE,
-  vote TEXT NOT NULL CHECK(vote IN ('yes','no')),
-  created_at TIMESTAMPTZ DEFAULT now(),
-  PRIMARY KEY(proposal_id, voter_id)
-);
 
 CREATE TABLE IF NOT EXISTS payments (
   id BIGSERIAL PRIMARY KEY,
@@ -109,6 +87,7 @@ CREATE TABLE IF NOT EXISTS payments (
   amount NUMERIC(10,2) NOT NULL,
   status TEXT DEFAULT 'pending',
   proof_file_id TEXT,
+  proof_type TEXT DEFAULT 'photo',
   created_at TIMESTAMPTZ DEFAULT now(),
   decided_at TIMESTAMPTZ
 );
@@ -122,6 +101,10 @@ CREATE TABLE IF NOT EXISTS pot_transactions (
 );
 
 -- upgrades safe
+DROP TABLE IF EXISTS proposal_votes;
+DROP TABLE IF EXISTS proposals;
+ALTER TABLE users DROP COLUMN IF EXISTS declared_photos;
+ALTER TABLE users DROP COLUMN IF EXISTS declared_videos;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS flow_message_id BIGINT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS flow_chat_id BIGINT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS valid_media_count INT DEFAULT 0;
@@ -150,6 +133,7 @@ ALTER TABLE groups ADD COLUMN IF NOT EXISTS targeted BOOLEAN DEFAULT TRUE;
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS last_ad_message_id BIGINT;
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS proof_type TEXT DEFAULT 'photo';
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS proof_type TEXT DEFAULT 'photo';
 
 INSERT INTO settings(key,value) VALUES
 ('ad_text', '🔒 Communauté privée francophone\n\n• Accès sélectif\n• Contribution obligatoire\n• Vérification manuelle\n\nLes candidatures sont limitées.'),
