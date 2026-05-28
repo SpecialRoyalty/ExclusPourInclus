@@ -145,6 +145,7 @@ def moderation_menu_kb():
     return kb([
         [('📥 Candidatures en attente', 'admin:apps')],
         [('🚫 Blacklist', 'admin:blacklist')],
+        [('🧾 Logs récents', 'admin:logs')],
         [('⬅️ Retour panel', 'admin:home')],
     ])
 

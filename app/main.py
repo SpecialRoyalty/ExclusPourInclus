@@ -682,14 +682,39 @@ async def on_bot_chat_member(update: ChatMemberUpdated):
 
 
 async def ban_user(user_id: int, reason: str = 'ban'):
+    # Blacklist en base + tentative de bannissement dans TOUS les groupes détectés actifs.
+    # Important : Telegram ne permet pas à un bot de lister tous les groupes où il est admin.
+    # Le bot peut bannir uniquement dans les groupes déjà détectés/enregistrés en base.
     await db.execute("UPDATE users SET banned=true,status='banned',updated_at=now() WHERE telegram_id=$1", user_id)
-    rows = await db.fetch("SELECT chat_id FROM groups WHERE type IN ('main','publicity')")
+    rows = await db.fetch("SELECT chat_id,title,type FROM groups WHERE active=true")
+    if not rows:
+        await db.log(reason + '_no_groups_registered', telegram_id=user_id, level='warning')
+        await notify_admins(f"⚠️ Ban utilisateur {user_id} : aucun groupe détecté en base. Ajoutez/envoyez un message dans les groupes pour les enregistrer.")
+        return
+    ok = 0
+    failed = 0
+    errors = []
     for r in rows:
+        chat_id = int(r['chat_id'])
         try:
-            await bot.ban_chat_member(int(r['chat_id']), user_id)
-        except Exception:
-            pass
-    await db.log(reason, telegram_id=user_id)
+            await bot.ban_chat_member(chat_id, user_id)
+            ok += 1
+            await db.log('group_ban_success', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'group_type': r['type'], 'title': r['title']})
+        except Exception as e:
+            failed += 1
+            err = str(e)
+            errors.append(f"{r['title'] or chat_id}: {err}")
+            await db.log('group_ban_failed', telegram_id=user_id, chat_id=chat_id, data={'reason': reason, 'error': err, 'group_type': r['type'], 'title': r['title']}, level='error')
+    await db.log(reason, telegram_id=user_id, data={'groups_ok': ok, 'groups_failed': failed})
+    if failed:
+        details = '\n'.join(errors[:5])
+        await notify_admins(
+            f"⚠️ Ban partiel pour {user_id}\n\n"
+            f"✅ Groupes bannis : {ok}\n"
+            f"❌ Échecs : {failed}\n\n"
+            f"Causes possibles : bot pas admin, permission bannir absente, groupe non accessible.\n\n"
+            f"{details}"
+        )
 
 async def kick_user(chat_id: int, user_id: int, reason: str):
     try:
@@ -855,6 +880,19 @@ async def admin_info(c: CallbackQuery):
     target_count = await db.fetchval("SELECT count(*) FROM groups WHERE type='publicity' AND targeted=true") or 0
     checks.append(f"{'✅' if main else '❌'} Groupe principal : {main or 'non configuré'}")
     checks.append(f"{'✅' if pub_count else '❌'} Groupes publicité : {pub_count} configuré(s), {target_count} ciblé(s)")
+    # Vérification permissions de ban dans les groupes configurés/détectés
+    try:
+        groups = await db.fetch("SELECT chat_id,title,type FROM groups WHERE active=true ORDER BY type,title LIMIT 20")
+        bot_id = me.id
+        for g in groups:
+            try:
+                member = await bot.get_chat_member(int(g['chat_id']), bot_id)
+                can_ban = bool(getattr(member, 'can_restrict_members', False))
+                checks.append(f"{'✅' if can_ban else '❌'} Ban permission : {g['title'] or g['chat_id']} ({g['type']})")
+            except Exception as e:
+                checks.append(f"❌ Groupe inaccessible : {g['title'] or g['chat_id']} — {e}")
+    except Exception as e:
+        checks.append(f"❌ Vérification groupes impossible : {e}")
     for label, key in [('Image pub','ad_image_file_id'), ('Image accueil','welcome_image_file_id'), ('Image preuve','proof_example_image_file_id')]:
         checks.append(f"{'✅' if await get_setting(key, '') else '❌'} {label}")
     checks.append(f"{'✅' if await get_setting('ad_text','') else '❌'} Texte publicité")
@@ -989,6 +1027,21 @@ async def admin_blacklist(c: CallbackQuery):
     await update_flow(c, text, reply_markup=back_admin_kb())
     await c.answer()
 
+@router.callback_query(F.data == 'admin:logs')
+async def admin_logs(c: CallbackQuery):
+    if not is_admin(c.from_user.id): return
+    rows = await db.fetch("SELECT level,event,telegram_id,chat_id,data,created_at FROM logs ORDER BY created_at DESC LIMIT 15")
+    if not rows:
+        text = '🧾 Aucun log pour le moment.'
+    else:
+        lines = []
+        for r in rows:
+            icon = '❌' if r['level'] == 'error' else ('⚠️' if r['level'] == 'warning' else 'ℹ️')
+            lines.append(f"{icon} {r['event']} | user:{r['telegram_id'] or '-'} | chat:{r['chat_id'] or '-'}")
+        text = '🧾 Logs récents\n\n' + '\n'.join(lines)
+    await update_flow(c, text, reply_markup=moderation_menu_kb())
+    await c.answer()
+
 @router.callback_query(F.data == 'admin:proposals')
 async def admin_proposals(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
@@ -1004,6 +1057,16 @@ async def admin_proposals(c: CallbackQuery):
 async def admin_settings(c: CallbackQuery):
     if not is_admin(c.from_user.id): return
     await update_flow(c, '⚙️ Réglages\n\nVersion simple active :\n• français uniquement ;\n• pas de deuxième tentative ;\n• contrôle silencieux des contributions ;\n• anti-liens et anti-doublons actifs.\n\nLes groupes se configurent dans 👥 Groupes. Les paiements se configurent dans 💳 Paiements.', reply_markup=back_admin_kb())
+    await c.answer()
+
+
+@router.callback_query()
+async def ignored_banned_callbacks(c: CallbackQuery):
+    # Fallback sécurité : si un utilisateur banni clique sur un ancien bouton, aucun parcours ne redémarre.
+    u = await db.fetchrow('SELECT banned FROM users WHERE telegram_id=$1', c.from_user.id)
+    if u and u['banned']:
+        await c.answer('Accès bloqué.', show_alert=True)
+        return
     await c.answer()
 
 # ---------- MONITORS ----------
@@ -1063,12 +1126,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-@router.callback_query()
-async def ignored_banned_callbacks(c: CallbackQuery):
-    # Fallback de sécurité : si un utilisateur banni clique sur un ancien bouton, on ne relance aucun parcours.
-    u = await db.fetchrow('SELECT banned FROM users WHERE telegram_id=$1', c.from_user.id)
-    if u and u['banned']:
-        await c.answer('Accès bloqué.', show_alert=True)
-        return
-    await c.answer()
