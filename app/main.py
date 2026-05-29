@@ -371,7 +371,7 @@ async def quota_edit(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == 'quota:confirm')
 async def quota_confirm(c: CallbackQuery, state: FSMContext):
     proof_img = await get_setting('proof_example_image_file_id')
-    text = 'Pour protéger les membres de la communauté, une vérification est nécessaire.\n\nVeuillez envoyer une preuve correspondant à l’exemple fourni par les admins.\n\nLes preuves incohérentes ou invalides peuvent entraîner un refus.'
+    text = 'Pour protéger les membres de la communauté, une vérification est nécessaire.\n\nVeuillez envoyer une preuve correspondant à l’exemple fourni par les admins.\n\nLes preuves incohérentes ou invalides entraînent un BAN IMMEDIAT.'
     await update_flow(c, text, image_setting='proof_example_image_file_id' if proof_img else None)
     await state.set_state(Apply.proof)
     await c.answer()
