@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from aiogram import Bot, Dispatcher, F, Router, BaseMiddleware
-from aiogram.enums import ChatMemberStatus
+from aiogram.enums import ChatMemberStatusf
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -220,7 +220,9 @@ async def start(m: Message, state: FSMContext):
         m.chat.id,
         '👋 Bienvenue.\n\n'
         'Vous êtes sur le point de rejoindre une communauté privée.\n\n'
-        '🔥 Tous les membres apportent du contenu exclusif. Votre entrée est gratuite ; pour les autres, elle ne le sera pas.\n\n'
+        '🔥 Tous les membres apportent du contenu exclusif.\n'
+        '🎁 Votre entrée est gratuite.\n'
+        '💳 Pour les autres, ceux qui n’ont pas de média, elle ne le sera pas.\n\n'
         '💸 L’argent des entrées sert à financer de nouveaux médias MYM / OnlyFans accessibles à tous les membres.\n\n'
         '🤝 Aucun bénéfice personnel, tout est géré de manière transparente.\n\n'
         '🔒 Le processus d’accès est sélectif afin de préserver la qualité du groupe.',
