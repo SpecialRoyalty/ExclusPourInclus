@@ -215,21 +215,21 @@ async def start(m: Message, state: FSMContext):
         )
         return
 
-    await send_flow(
-        m.from_user.id,
-        m.chat.id,
-        '👋 Bienvenue.\n\n'
-        'Vous êtes sur le point de rejoindre une communauté privée.\n\n'
-        '🔥 Tous les membres apportent du contenu exclusif.\n'
-        '🎁 Votre entrée est gratuite.\n'
-        '💳 Pour les autres, ceux qui n’ont pas de média, elle ne le sera pas.\n\n'
-        '💸 L’argent des entrées sert à financer de nouveaux médias MYM / OnlyFans accessibles à tous les membres.\n\n'
-        '🤝 Aucun bénéfice personnel, tout est géré de manière transparente.\n\n'
-        '🔒 Le processus d’accès est sélectif afin de préserver la qualité du groupe.',
-        reply_markup=start_kb(),
+        await send_flow(
+            m.from_user.id,
+            m.chat.id,
+            '👋 Bienvenue.\n\n'
+            'Vous êtes sur le point de rejoindre une communauté privée.\n\n'
+            '🔥 Tous les membres apportent du contenu exclusif.\n'
+            '🎁 Votre entrée est gratuite.\n'
+            '💳 Pour les autres, ceux qui n\'ont pas de média, elle ne le sera pas.\n\n'
+            '💸 L’argent des entrées sert à financer de nouveaux médias MYM / OnlyFans accessibles à tous les membres.\n\n'
+            '🤝 Aucun bénéfice personnel, tout est géré de manière transparente.\n\n'
+            '🔒 Le processus d’accès est sélectif afin de préserver la qualité du groupe.',
+            reply_markup=start_kb(),
             image_setting='welcome_image_file_id',
-            replace=True,
-        )
+            replace=True
+)
 
 @router.callback_query(F.data == 'start:not_interested')
 async def not_interested(c: CallbackQuery):
