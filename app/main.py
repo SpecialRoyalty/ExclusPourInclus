@@ -169,10 +169,56 @@ async def start(m: Message, state: FSMContext):
     if is_admin(m.from_user.id):
         await show_admin_panel(m.chat.id, m.from_user.id)
         return
+
+    status = u['status'] if u else 'new'
+    attempts = await db.fetchval('SELECT attempts FROM users WHERE telegram_id=$1', m.from_user.id) or 0
+
+    # Un membre déjà accepté ne peut pas relancer le formulaire.
+    if status in {'member_validated', 'premium_validated', 'temporary_member'}:
+        await send_flow(
+            m.from_user.id,
+            m.chat.id,
+            '✅ Votre accès est déjà validé.\n\nVous êtes déjà intégré au groupe principal. Il n’est pas possible de recommencer le formulaire.',
+            replace=True,
+        )
+        return
+
+    # Candidature déjà validée mais règles/lien pas encore terminés : on reprend au bon endroit.
+    if status == 'validated':
+        await send_flow(
+            m.from_user.id,
+            m.chat.id,
+            'Votre candidature est déjà validée.\n\nVeuillez terminer l’acceptation des règles pour recevoir votre lien.',
+            reply_markup=rules_kb(1),
+            replace=True,
+        )
+        return
+
+    # Une candidature ou preuve paiement déjà en cours ne doit pas créer une nouvelle instance.
+    if status in {'proof_sent', 'premium_payment_pending', 'premium_payment_proof_waiting'}:
+        await send_flow(
+            m.from_user.id,
+            m.chat.id,
+            'Votre demande est déjà en cours de vérification.\n\nMerci d’attendre la décision des admins.',
+            replace=True,
+        )
+        return
+
+    # Limite globale : 2 formulaires maximum.
+    if attempts >= 2:
+        await send_flow(
+            m.from_user.id,
+            m.chat.id,
+            'Vous avez déjà utilisé vos 2 tentatives de formulaire.\n\nVous ne pouvez plus recommencer une candidature gratuite.',
+            reply_markup=no_content_kb(),
+            replace=True,
+        )
+        return
+
     await send_flow(
         m.from_user.id,
         m.chat.id,
-        '👋 Bienvenue.\n\nVous êtes sur le point de rejoindre une communauté privée.\n\n🔥 Tous les membres apportent du contenu exclusif. Votre entrée est gratuite ; pour les autres, elle ne le sera pas.\n\n💸 L’argent des entrées sert à financer de nouveaux médias MYM / OnlyFans accessibles à tous les membres.\n\n🤝 Aucun bénéfice personnel, tout est géré de manière transparente.\n\n🔒 Le processus d’accès est sélectif afin de préserver la qualité du groupe.',
+        'Bienvenue.\n\nVous êtes sur le point de rejoindre une communauté privée réservée aux profils capables d’apporter du contenu inédit.\n\nLe processus d’accès est sélectif afin de préserver la qualité du groupe.',
         reply_markup=start_kb(),
         image_setting='welcome_image_file_id',
         replace=True,
@@ -188,17 +234,19 @@ async def not_interested(c: CallbackQuery):
 @router.callback_query(F.data == 'start:interested')
 async def interested(c: CallbackQuery, state: FSMContext):
     await ensure_user(c)
+    u = await db.fetchrow('SELECT status,attempts FROM users WHERE telegram_id=$1', c.from_user.id)
+    status = u['status'] if u else 'new'
+    attempts = u['attempts'] if u else 0
+    if status in {'member_validated', 'premium_validated', 'temporary_member', 'validated'}:
+        await update_flow(c, '✅ Votre accès est déjà validé.\n\nIl n’est pas possible de recommencer le formulaire.')
+        await c.answer()
+        return
+    if attempts >= 2:
+        await update_flow(c, 'Vous avez déjà utilisé vos 2 tentatives de formulaire.\n\nVous ne pouvez plus recommencer une candidature gratuite.', reply_markup=no_content_kb())
+        await c.answer()
+        return
     await db.execute("UPDATE users SET status='interested' WHERE telegram_id=$1", c.from_user.id)
-    await update_flow(
-        c,
-        '🇫🇷 Veuillez choisir votre langue.\n'
-        '🇬🇧 Please choose your language.\n'
-        '🇮🇹 Per favore scegli la tua lingua.\n'
-        '🇸🇦 يرجى اختيار لغتك.\n'
-        '🇷🇺 Пожалуйста, выберите ваш язык.\n'
-        '🇪🇸 Por favor, elige tu idioma.',
-        reply_markup=languages_kb()
-    )
+    await update_flow(c, 'Veuillez choisir votre langue.', reply_markup=languages_kb())
     await state.set_state(Apply.language)
     await c.answer()
 
@@ -230,6 +278,12 @@ async def go_profile(c: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith('profile:'))
 async def choose_profile(c: CallbackQuery, state: FSMContext):
+    attempts = await db.fetchval('SELECT attempts FROM users WHERE telegram_id=$1', c.from_user.id) or 0
+    if attempts >= 2:
+        await update_flow(c, 'Vous avez déjà utilisé vos 2 tentatives de formulaire.\n\nVous ne pouvez plus recommencer une candidature gratuite.', reply_markup=no_content_kb())
+        await state.clear()
+        await c.answer()
+        return
     p = c.data.split(':', 1)[1]
     await db.execute('UPDATE users SET profile_type=$2 WHERE telegram_id=$1', c.from_user.id, p)
     if p == 'none':
@@ -308,6 +362,11 @@ async def quota_confirm(c: CallbackQuery, state: FSMContext):
 
 @router.message(Apply.proof)
 async def apply_proof(m: Message, state: FSMContext):
+    attempts = await db.fetchval('SELECT attempts FROM users WHERE telegram_id=$1', m.from_user.id) or 0
+    if attempts >= 2:
+        await send_flow(m.from_user.id, m.chat.id, 'Vous avez déjà utilisé vos 2 tentatives de formulaire.\n\nVous ne pouvez plus envoyer une nouvelle candidature gratuite.', reply_markup=no_content_kb())
+        await state.clear()
+        return
     file_id = None
     proof_type = 'photo'
     if m.photo:
@@ -323,7 +382,7 @@ async def apply_proof(m: Message, state: FSMContext):
         "INSERT INTO applications(telegram_id,status,proof_file_id,proof_type) VALUES($1,'pending_admin',$2,$3) RETURNING id",
         m.from_user.id, file_id, proof_type,
     )
-    await db.execute("UPDATE users SET status='proof_sent' WHERE telegram_id=$1", m.from_user.id)
+    await db.execute("UPDATE users SET status='proof_sent', attempts=attempts+1, updated_at=now() WHERE telegram_id=$1", m.from_user.id)
     u = await db.fetchrow('SELECT declared_total FROM users WHERE telegram_id=$1', m.from_user.id)
     caption = f"📥 Nouvelle candidature\n\n👤 Utilisateur : @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\n\n📦 Déclaré : {u['declared_total']} médias"
     for aid in config.admin_ids:
@@ -334,12 +393,7 @@ async def apply_proof(m: Message, state: FSMContext):
                 await bot.send_document(aid, file_id, caption=caption, reply_markup=admin_application_kb(app_id, m.from_user.id))
         except Exception:
             await bot.send_message(aid, caption, reply_markup=admin_application_kb(app_id, m.from_user.id))
-    await send_flow(
-        m.from_user.id,
-        m.chat.id,
-        '🤖 Nos bots analysent actuellement vos données, veuillez patienter...\n\n'
-        '💡 Le saviez-vous ? Aucun traitement humain n’est nécessaire grâce à nos systèmes automatisés et un peu d’IA.'
-    )
+    await send_flow(m.from_user.id, m.chat.id, 'Votre candidature a été envoyée aux admins. Vous serez notifié après décision.')
     await state.clear()
 
 
@@ -785,7 +839,7 @@ async def app_decision(c: CallbackQuery):
     if action == 'approve':
         await db.execute("UPDATE applications SET status='approved',admin_decision_by=$2,decision_at=now() WHERE id=$1", app_id, c.from_user.id)
         await db.execute("""
-            UPDATE users SET status='validated', attempts=attempts+1, joined_main_at=NULL,
+            UPDATE users SET status='validated', joined_main_at=NULL,
             first_media_at=NULL, valid_media_count=0, updated_at=now()
             WHERE telegram_id=$1
         """, user_id)
@@ -948,6 +1002,76 @@ async def ban_from_chat(chat_id: int, user_id: int, reason: str):
         await db.log(reason + '_failed', telegram_id=user_id, chat_id=chat_id, data={'error': str(e)}, level='error')
 
 
+async def handle_main_group_join(chat_id: int, member):
+    """Traite l’arrivée d’un utilisateur dans le groupe principal.
+
+    On l’appelle depuis deux sources :
+    - message service new_chat_members ;
+    - update chat_member.
+
+    Cela évite le bug où Telegram ne déclenche pas toujours le message service
+    selon le type de groupe / client / paramètres du groupe.
+    """
+    main = await get_setting('main_group', '')
+    if not main or str(chat_id) != str(main):
+        return
+    if getattr(member, 'is_bot', False):
+        return
+
+    u = await db.fetchrow('SELECT status,declared_total,attempts,banned FROM users WHERE telegram_id=$1', member.id)
+    await db.log('main_group_join_detected', telegram_id=member.id, chat_id=chat_id, data={'status': u['status'] if u else None, 'banned': bool(u['banned']) if u else None})
+
+    if not u or u['banned'] or u['status'] not in {'validated', 'temporary_member', 'premium_validated'}:
+        await ban_from_chat(chat_id, member.id, 'ban_join_without_validation')
+        return
+
+    if u['status'] == 'premium_validated':
+        await db.execute("UPDATE users SET status='member_validated', joined_main_at=now(), updated_at=now() WHERE telegram_id=$1", member.id)
+        try:
+            await bot.send_message(member.id, '✅ Vous êtes entré dans le groupe principal.\n\nVotre accès premium est validé. Bienvenue.')
+        except Exception as e:
+            await db.log('premium_private_welcome_failed', telegram_id=member.id, chat_id=chat_id, data={'error': str(e)}, level='warning')
+        try:
+            msg = await bot.send_message(chat_id, f"Bienvenue @{member.username or member.first_name}.\n\n✅ Accès premium validé.")
+            await asyncio.sleep(180)
+            try:
+                await bot.delete_message(chat_id, msg.message_id)
+            except Exception:
+                pass
+        except Exception as e:
+            await db.log('premium_welcome_message_failed', telegram_id=member.id, chat_id=chat_id, data={'error': str(e)}, level='error')
+        return
+
+    await db.execute("UPDATE users SET status='temporary_member', joined_main_at=COALESCE(joined_main_at, now()), first_media_at=NULL, valid_media_count=0, updated_at=now() WHERE telegram_id=$1", member.id)
+    private_text = (
+        f"✅ Vous êtes entré dans le groupe principal.\n\n"
+        f"📦 Déclaration : {u['declared_total']} médias.\n\n"
+        "Vous devez maintenant publier les médias déclarés lors de votre candidature.\n\n"
+        "Les doublons, reposts ou contenus déjà présents ne seront pas comptabilisés."
+    )
+    try:
+        await bot.send_message(member.id, private_text)
+    except Exception as e:
+        await db.log('main_group_private_welcome_failed', telegram_id=member.id, chat_id=chat_id, data={'error': str(e)}, level='warning')
+
+    try:
+        msg = await bot.send_message(
+            chat_id,
+            f"Bienvenue @{member.username or member.first_name}\n\n"
+            f"📦 Déclaration : {u['declared_total']} médias.\n\n"
+            "Vous devez maintenant publier les médias déclarés lors de votre candidature.\n\n"
+            "⚠ Les doublons, reposts ou contenus déjà présents ne seront pas comptabilisés."
+        )
+        await db.log('main_group_welcome_sent', telegram_id=member.id, chat_id=chat_id, data={'declared_total': u['declared_total']})
+        await asyncio.sleep(180)
+        try:
+            await bot.delete_message(chat_id, msg.message_id)
+        except Exception:
+            pass
+    except Exception as e:
+        await db.log('main_group_welcome_failed', telegram_id=member.id, chat_id=chat_id, data={'error': str(e)}, level='error')
+
+
 @router.message(F.new_chat_members)
 async def on_new_members(m: Message):
     main = await get_setting('main_group', '')
@@ -958,31 +1082,25 @@ async def on_new_members(m: Message):
     except Exception:
         pass
     for member in m.new_chat_members:
-        if member.is_bot:
-            continue
-        u = await db.fetchrow('SELECT status,declared_total,attempts,banned FROM users WHERE telegram_id=$1', member.id)
-        if not u or u['banned'] or u['status'] not in {'validated', 'temporary_member', 'premium_validated'}:
-            await ban_from_chat(m.chat.id, member.id, 'ban_join_without_validation')
-            continue
-        if u['status'] == 'premium_validated':
-            await db.execute("UPDATE users SET status='member_validated', joined_main_at=now(), updated_at=now() WHERE telegram_id=$1", member.id)
-            try:
-                msg = await bot.send_message(m.chat.id, f"Bienvenue @{member.username or member.first_name}.\n\n✅ Accès premium validé.")
-                await asyncio.sleep(180)
-                try: await bot.delete_message(m.chat.id, msg.message_id)
-                except Exception: pass
-            except Exception:
-                pass
-            continue
+        await handle_main_group_join(m.chat.id, member)
 
-        await db.execute("UPDATE users SET status='temporary_member', joined_main_at=now(), first_media_at=NULL, valid_media_count=0, updated_at=now() WHERE telegram_id=$1", member.id)
-        try:
-            msg = await bot.send_message(m.chat.id, f"Bienvenue @{member.username or member.first_name}.\n\n📦 Déclaration : {u['declared_total']} médias.\n\nVous devez maintenant publier les médias déclarés lors de votre candidature.\n\n⚠ Les doublons, reposts ou contenus déjà présents ne seront pas comptabilisés.")
-            await asyncio.sleep(180)
-            try: await bot.delete_message(m.chat.id, msg.message_id)
-            except Exception: pass
-        except Exception:
-            pass
+
+@router.chat_member()
+async def on_chat_member_update(update: ChatMemberUpdated):
+    """Fallback robuste pour détecter l’arrivée dans le groupe principal.
+
+    Certains groupes/clients ne montrent pas toujours le message service
+    new_chat_members comme prévu. Cette update permet de traiter aussi le
+    changement de statut vers member.
+    """
+    main = await get_setting('main_group', '')
+    if not main or str(update.chat.id) != str(main):
+        return
+    old_status = update.old_chat_member.status
+    new_status = update.new_chat_member.status
+    if new_status in {ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED} and old_status in {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}:
+        await handle_main_group_join(update.chat.id, update.new_chat_member.user)
+
 
 async def extract_media_ids(m: Message):
     if m.photo:

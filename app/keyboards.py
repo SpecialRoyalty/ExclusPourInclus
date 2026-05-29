@@ -29,7 +29,7 @@ def languages_kb():
 
 def profile_kb():
     return kb([
-        [('📦 Acheteur MYM/OF / Créateur', 'profile:supplier')],
+        [('📦 Fournisseur / Créateur', 'profile:supplier')],
         [('💾 Amateur / Collectionneur', 'profile:collector')],
         [('❌ Je n’ai pas de contenu', 'profile:none')],
         [('⬅️ Retour', 'start:interested')],
