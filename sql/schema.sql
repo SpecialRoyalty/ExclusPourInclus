@@ -19,6 +19,13 @@ CREATE TABLE IF NOT EXISTS users (
   banned BOOLEAN DEFAULT FALSE,
   flow_message_id BIGINT,
   flow_chat_id BIGINT,
+  origin_text TEXT,
+  feedback_text TEXT,
+  feedback_at TIMESTAMPTZ,
+  premium_nudge_sent BOOLEAN DEFAULT FALSE,
+  half_media_count INT DEFAULT 0,
+  half_required INT DEFAULT 0,
+  left_access_lost_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -70,6 +77,16 @@ CREATE TABLE IF NOT EXISTS media_hashes (
   UNIQUE(file_unique_id)
 );
 
+
+CREATE TABLE IF NOT EXISTS half_media (
+  id BIGSERIAL PRIMARY KEY,
+  telegram_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE,
+  file_id TEXT NOT NULL,
+  file_unique_id TEXT,
+  media_type TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS logs (
   id BIGSERIAL PRIMARY KEY,
   level TEXT DEFAULT 'info',
@@ -112,6 +129,15 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS first_media_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS joined_main_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS attempts INT DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN DEFAULT FALSE;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS origin_text TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS feedback_text TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS feedback_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_nudge_sent BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS half_media_count INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS half_required INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS left_access_lost_at TIMESTAMPTZ;
+
 -- Drop any old CHECK constraint on groups.type, even if PostgreSQL generated a different name.
 DO $$
 DECLARE r record;
