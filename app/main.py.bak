@@ -251,10 +251,6 @@ async def not_interested(c: CallbackQuery):
 
 @router.callback_query(F.data == 'feedback:start')
 async def feedback_start(c: CallbackQuery, state: FSMContext):
-    already = await db.fetchval('SELECT feedback_at FROM users WHERE telegram_id=$1', c.from_user.id)
-    if already:
-        await c.answer('Feedback déjà reçu.', show_alert=True)
-        return
     await db.execute("UPDATE users SET status='feedback_waiting', updated_at=now() WHERE telegram_id=$1", c.from_user.id)
     await update_flow(c, 'Vous pouvez envoyer un seul message pour expliquer pourquoi vous n’êtes pas intéressé.')
     await state.set_state(Feedback.waiting_text)
@@ -565,11 +561,6 @@ async def payment_decision(c: CallbackQuery, state: FSMContext):
         await c.answer('Admin uniquement', show_alert=True); return
     _, action, payment_id, user_id = c.data.split(':')
     payment_id, user_id = int(payment_id), int(user_id)
-    current_status = await db.fetchval('SELECT status FROM payments WHERE id=$1', payment_id)
-    if current_status != 'pending':
-        await c.answer('Paiement déjà traité.', show_alert=True)
-        await safe_mark_admin_message(c, f'ℹ️ Déjà traité : {current_status}')
-        return
     if action == 'approve':
         await db.execute("UPDATE payments SET status='validated', decided_at=now() WHERE id=$1", payment_id)
         amount = await db.fetchval('SELECT amount FROM payments WHERE id=$1', payment_id) or 0
@@ -678,11 +669,6 @@ async def vip_decision(c: CallbackQuery):
         return
     _, action, user_id = c.data.split(':')
     user_id = int(user_id)
-    current_status = await db.fetchval('SELECT status FROM users WHERE telegram_id=$1', user_id)
-    if current_status not in {'vip_waiting', 'vip_provider_waiting', 'vip_media_count_waiting'}:
-        await c.answer('Demande VIP déjà traitée ou inactive.', show_alert=True)
-        await safe_mark_admin_message(c, f'ℹ️ Déjà traité : {current_status}')
-        return
     if action == 'approve':
         await grant_premium_access(user_id, status='vip_validated')
         await safe_mark_admin_message(c, '✅ VIP validé')
@@ -974,11 +960,6 @@ async def app_decision(c: CallbackQuery):
         await c.answer('Admin uniquement', show_alert=True); return
     _, action, app_id, user_id = c.data.split(':')
     app_id, user_id = int(app_id), int(user_id)
-    app_status = await db.fetchval('SELECT status FROM applications WHERE id=$1', app_id)
-    if app_status != 'pending_admin':
-        await c.answer('Candidature déjà traitée.', show_alert=True)
-        await safe_mark_admin_message(c, f'ℹ️ Déjà traité : {app_status}')
-        return
     if action == 'approve':
         await db.execute("UPDATE applications SET status='approved',admin_decision_by=$2,decision_at=now() WHERE id=$1", app_id, c.from_user.id)
         declared = await db.fetchval('SELECT declared_total FROM users WHERE telegram_id=$1', user_id) or 0
@@ -1081,11 +1062,6 @@ async def half_decision(c: CallbackQuery):
         return
     _, action, user_id = c.data.split(':')
     user_id = int(user_id)
-    current_status = await db.fetchval('SELECT status FROM users WHERE telegram_id=$1', user_id)
-    if current_status != 'half_review_pending':
-        await c.answer('Validation 50% déjà traitée ou inactive.', show_alert=True)
-        await safe_mark_admin_message(c, f'ℹ️ Déjà traité : {current_status}')
-        return
     if action == 'approve':
         await db.execute("UPDATE users SET status='validated', updated_at=now() WHERE telegram_id=$1", user_id)
         try:
@@ -1515,9 +1491,7 @@ async def admin_info(c: CallbackQuery):
     checks.append(f"{'✅' if await get_setting('paypal_link','') else '❌'} PayPal")
     checks.append(f"{'✅' if await get_setting('usdt_address','') else '❌'} USDT")
     enabled = await get_setting('auto_pub_enabled', '0') == '1'
-    interval = await get_setting('auto_pub_interval_minutes', '10')
     checks.append(f"{'🟢' if enabled else '🔴'} Auto pub : {'ON' if enabled else 'OFF'}")
-    checks.append(f"⏱ Fréquence publicité : {interval} minute(s)")
     await update_flow(c, 'ℹ️ Info / Vérification\n\n' + '\n'.join(checks), reply_markup=back_admin_kb())
     await c.answer()
 

@@ -16,7 +16,7 @@ def start_kb():
     return kb([[('✅ Je suis intéressé', 'start:interested')], [('❌ Pas intéressé', 'start:not_interested')]])
 
 def not_interested_kb():
-    return kb([[('⬅️ Retour', 'start:interested')]])
+    return kb([[('💬 Donner un feedback', 'feedback:start')], [('⬅️ Retour', 'start:interested')]])
 
 
 def languages_kb():
@@ -29,7 +29,7 @@ def languages_kb():
 
 def profile_kb():
     return kb([
-        [('📦 Acheteur MYM-OF / Créateur', 'profile:supplier')],
+        [('📦 Acheteur / Créateur', 'profile:supplier')],
         [('💾 Amateur / Collectionneur', 'profile:collector')],
         [('❌ Je n’ai pas de contenu', 'profile:none')],
         [('⬅️ Retour', 'start:interested')],
@@ -167,4 +167,22 @@ def settings_menu_kb():
     return kb([
         [('⏱ Fréquence publicité', 'text:set:auto_pub_interval_minutes')],
         [('⬅️ Retour panel', 'admin:home')],
+    ])
+
+
+def buyer_regular_kb():
+    return kb([[('✅ Oui', 'buyer:yes'), ('❌ Non', 'buyer:no')], [('⬅️ Retour', 'go:profile')]])
+
+def half_review_kb(user_id: int):
+    return kb([
+        [('✅ Cohérent', f'half:approve:{user_id}'), ('❌ Refuser', f'half:reject:{user_id}')],
+        [('🚫 Bannir', f'half:ban:{user_id}')],
+    ])
+
+
+def admin_vip_kb(user_id: int):
+    return kb([
+        [('✅ Valider VIP', f'vipdec:approve:{user_id}')],
+        [('❌ Refuser VIP', f'vipdec:reject:{user_id}')],
+        [('🚫 Bannir', f'vipdec:ban:{user_id}')],
     ])
