@@ -170,3 +170,5 @@ INSERT INTO settings(key,value) VALUES
 ('paypal_link', ''),
 ('usdt_address', '')
 ON CONFLICT(key) DO NOTHING;
+
+ALTER TABLE half_media ADD COLUMN IF NOT EXISTS source_message_id BIGINT;
