@@ -1048,21 +1048,29 @@ async def half_upload_private(m: Message):
     if exists:
         await m.answer('Ce média a déjà été reçu et ne sera pas recompté.')
         return
-    await db.execute('INSERT INTO half_media(telegram_id,file_id,file_unique_id,media_type) VALUES($1,$2,$3,$4)', m.from_user.id, file_id, unique_id, media_type)
+    await db.execute('INSERT INTO half_media(telegram_id,file_id,file_unique_id,media_type,source_message_id) VALUES($1,$2,$3,$4,$5)', m.from_user.id, file_id, unique_id, media_type, m.message_id)
     await db.execute('UPDATE users SET half_media_count=half_media_count+1, updated_at=now() WHERE telegram_id=$1', m.from_user.id)
     count = await db.fetchval('SELECT half_media_count FROM users WHERE telegram_id=$1', m.from_user.id) or 0
     required = row['half_required'] or 1
     caption = f"📦 Média vérification 50%\n\n👤 @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\nProgression : {count}/{required}"
+    # Envoi réel du média aux admins.
+    # On utilise copy_message depuis le message original reçu en privé :
+    # c'est plus fiable que ré-envoyer uniquement le file_id, et ça évite les pertes silencieuses.
     for aid in config.admin_ids:
         try:
-            if media_type == 'photo':
-                await bot.send_photo(aid, file_id, caption=caption)
-            elif media_type == 'video':
-                await bot.send_video(aid, file_id, caption=caption)
-            else:
-                await bot.send_document(aid, file_id, caption=caption)
-        except Exception:
-            pass
+            await bot.copy_message(
+                chat_id=aid,
+                from_chat_id=m.chat.id,
+                message_id=m.message_id,
+                caption=caption,
+            )
+            await db.log('half_media_sent_to_admin', telegram_id=m.from_user.id, data={'admin_id': aid, 'count': count, 'required': required})
+        except Exception as e:
+            await db.log('half_media_send_admin_failed', telegram_id=m.from_user.id, data={'admin_id': aid, 'error': str(e), 'count': count, 'required': required}, level='error')
+            try:
+                await bot.send_message(aid, f"⚠️ Impossible de copier un média 50% pour @{m.from_user.username or '-'} ({m.from_user.id}).\nErreur : {e}")
+            except Exception:
+                pass
     if count >= required:
         await db.execute("UPDATE users SET status='half_review_pending', updated_at=now() WHERE telegram_id=$1", m.from_user.id)
         await m.answer('✅ Minimum immédiat reçu.\n\nLes admins vont maintenant vérifier la cohérence de vos médias. Vous recevrez le lien du groupe après validation.')
