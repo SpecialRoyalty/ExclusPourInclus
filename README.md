@@ -55,3 +55,18 @@ Le fichier `runtime.txt` force Python 3.12 pour éviter les problèmes de build 
 5. Vérifier que le bot est admin dans les groupes publicité et le groupe principal.
 6. Faire `/start` en privé avec un compte admin.
 7. Configurer les groupes, images, paiements et fréquence pub dans le panel.
+
+## Broadcast VIP coupe-file
+
+Depuis le panel admin :
+
+`📥 Modération` → `🎟 Broadcast VIP coupe-file`
+
+Le bot cible les utilisateurs non bannis ayant demandé un accès VIP coupe-file et dont le statut est :
+
+- `vip_provider_waiting`
+- `vip_media_count_waiting`
+- `vip_waiting`
+- `vip_rejected`
+
+L'admin envoie un message texte, confirme l'envoi, puis le bot diffuse en privé et affiche le nombre d'envois réussis/échoués.
