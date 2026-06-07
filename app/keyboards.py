@@ -138,6 +138,7 @@ def payments_menu_kb():
 def moderation_menu_kb():
     return kb([
         [('📥 Candidatures en attente', 'admin:apps')],
+        [('🎟 Broadcast VIP coupe-file', 'broadcast:vip_start')],
         [('🚫 Blacklist', 'admin:blacklist')],
         [('🧾 Logs récents', 'admin:logs')],
         [('⬅️ Retour panel', 'admin:home')],
@@ -185,4 +186,11 @@ def admin_vip_kb(user_id: int):
         [('✅ Valider VIP', f'vipdec:approve:{user_id}')],
         [('❌ Refuser VIP', f'vipdec:reject:{user_id}')],
         [('🚫 Bannir', f'vipdec:ban:{user_id}')],
+    ])
+
+
+def broadcast_confirm_kb():
+    return kb([
+        [('✅ Envoyer broadcast', 'broadcast:vip_confirm')],
+        [('❌ Annuler', 'broadcast:vip_cancel')],
     ])

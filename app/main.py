@@ -70,6 +70,9 @@ class AdminMedia(StatesGroup):
 class AdminText(StatesGroup):
     waiting_text = State()
 
+class AdminBroadcast(StatesGroup):
+    waiting_vip_broadcast_text = State()
+
 
 class PaymentProof(StatesGroup):
     waiting_proof = State()
@@ -1529,6 +1532,110 @@ async def admin_info(c: CallbackQuery):
     await update_flow(c, 'ℹ️ Info / Vérification\n\n' + '\n'.join(checks), reply_markup=back_admin_kb())
     await c.answer()
 
+
+
+# ---------- VIP BROADCAST ----------
+
+VIP_BROADCAST_STATUSES = (
+    'vip_provider_waiting',
+    'vip_media_count_waiting',
+    'vip_waiting',
+    'vip_rejected',
+)
+
+async def get_vip_broadcast_targets():
+    return await db.fetch(
+        """
+        SELECT telegram_id, username, status
+        FROM users
+        WHERE banned=false
+          AND status = ANY($1::text[])
+        ORDER BY updated_at DESC
+        """,
+        list(VIP_BROADCAST_STATUSES),
+    )
+
+@router.callback_query(F.data == 'broadcast:vip_start')
+async def vip_broadcast_start(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id):
+        return
+    targets = await get_vip_broadcast_targets()
+    if not targets:
+        await update_flow(c, '🎟 Broadcast VIP coupe-file\n\nAucun utilisateur éligible trouvé pour le moment.', reply_markup=moderation_menu_kb())
+        await c.answer()
+        return
+    await state.clear()
+    await state.update_data(vip_broadcast_count=len(targets))
+    await update_flow(
+        c,
+        f'🎟 Broadcast VIP coupe-file\n\nUtilisateurs ciblés : {len(targets)}\n\nEnvoyez maintenant le message à diffuser en privé aux personnes ayant demandé un accès coupe-file VIP.',
+        reply_markup=back_admin_kb(),
+    )
+    await state.set_state(AdminBroadcast.waiting_vip_broadcast_text)
+    await c.answer()
+
+@router.message(AdminBroadcast.waiting_vip_broadcast_text)
+async def vip_broadcast_text_received(m: Message, state: FSMContext):
+    if not is_admin(m.from_user.id):
+        return
+    text = (m.text or m.caption or '').strip()
+    if len(text) < 2:
+        await m.answer('Envoyez un message texte valide pour le broadcast VIP.')
+        return
+    # Limite Telegram raisonnable pour un message texte/caption.
+    text = text[:3500]
+    targets = await get_vip_broadcast_targets()
+    await state.update_data(vip_broadcast_text=text, vip_broadcast_count=len(targets))
+    preview = text if len(text) <= 1000 else text[:1000] + '\n…'
+    await send_flow(
+        m.from_user.id,
+        m.chat.id,
+        f'🎟 Broadcast VIP coupe-file\n\nCibles actuelles : {len(targets)} utilisateur(s)\n\nAperçu du message :\n\n{preview}\n\nConfirmer l’envoi ?',
+        reply_markup=broadcast_confirm_kb(),
+    )
+
+@router.callback_query(F.data == 'broadcast:vip_cancel')
+async def vip_broadcast_cancel(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id):
+        return
+    await state.clear()
+    await update_flow(c, 'Broadcast VIP annulé.', reply_markup=moderation_menu_kb())
+    await c.answer()
+
+@router.callback_query(F.data == 'broadcast:vip_confirm')
+async def vip_broadcast_confirm(c: CallbackQuery, state: FSMContext):
+    if not is_admin(c.from_user.id):
+        return
+    data = await state.get_data()
+    text = data.get('vip_broadcast_text')
+    if not text:
+        await c.answer('Aucun message à envoyer.', show_alert=True)
+        await state.clear()
+        return
+    targets = await get_vip_broadcast_targets()
+    sent = 0
+    failed = 0
+    failed_ids = []
+    await update_flow(c, f'🎟 Broadcast VIP en cours…\n\nCibles : {len(targets)}')
+    for r in targets:
+        uid = int(r['telegram_id'])
+        try:
+            await bot.send_message(uid, text)
+            sent += 1
+            await db.execute('UPDATE users SET updated_at=now() WHERE telegram_id=$1', uid)
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            failed += 1
+            failed_ids.append(uid)
+            await db.log('vip_broadcast_send_failed', telegram_id=uid, data={'error': str(e)}, level='warning')
+    await db.log('vip_broadcast_sent', telegram_id=c.from_user.id, data={'sent': sent, 'failed': failed, 'failed_ids': failed_ids[:20]})
+    await state.clear()
+    await update_flow(
+        c,
+        f'✅ Broadcast VIP terminé.\n\nEnvoyés : {sent}\nÉchecs : {failed}',
+        reply_markup=moderation_menu_kb(),
+    )
+    await c.answer()
 
 # ---------- OTHER ADMIN ----------
 
