@@ -32,8 +32,14 @@ class BlockBannedMiddleware(BaseMiddleware):
         user = getattr(event, 'from_user', None)
         if user and not is_admin(user.id):
             try:
-                row = await db.fetchrow('SELECT banned FROM users WHERE telegram_id=$1', user.id)
+                row = await db.fetchrow('SELECT banned,status FROM users WHERE telegram_id=$1', user.id)
                 if row and row['banned']:
+                    # Exception contrôlée : les utilisateurs bannis pour absence/quota peuvent répondre
+                    # à une relance d'appel, mais uniquement via le bouton/message dédié.
+                    if isinstance(event, CallbackQuery) and event.data == 'appeal:start':
+                        return await handler(event, data)
+                    if isinstance(event, Message) and event.chat.type == 'private' and row['status'] == 'appeal_required':
+                        return await handler(event, data)
                     if isinstance(event, CallbackQuery):
                         await event.answer('Accès bloqué.', show_alert=True)
                         return
@@ -486,13 +492,13 @@ def parse_money_value(raw: str) -> float:
         return 0.0
 
 async def premium_text() -> str:
-    price = await get_setting('premium_price', 'à confirmer')
+    price = await get_setting('premium_price', '25€')
     paypal = await get_setting('paypal_link', '')
     usdt = await get_setting('usdt_address', '')
     lines = [
         '💰 Accès premium',
         '',
-        f'Prix : {price}',
+        f'Prix : {price or '25€'}',
         '',
         'Paiement :',
     ]
@@ -659,53 +665,40 @@ async def vip_media_count(m: Message, state: FSMContext):
         return
     data = await state.get_data()
     provider = data.get('vip_provider', '')
+
+    # Nouveau flow VIP simplifié : pas de validation admin, pas de lien VIP généré.
+    # L'utilisateur contacte directement @op75x15 pour l'extraction.
+    # On garde le statut vip_waiting pour permettre le broadcast VIP coupe-file plus tard.
     await db.execute("UPDATE users SET status='vip_waiting', updated_at=now() WHERE telegram_id=$1", m.from_user.id)
-    
-    for aid in config.admin_ids:
-        try:
-            await bot.send_message(
-                aid,
-                f"🎟 Demande VIP coupe-file\n\n👤 @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\n🏷 VIP payé chez : {provider}\n📦 Médias annoncés : {n}",
-                reply_markup=admin_vip_kb(m.from_user.id),
-            )
-        except Exception:
-            pass
-    await m.answer('✅ Informations reçues.\n\nContactez maintenant @op75x15 pour faire une extraction. Envoyez-lui la capture de cette conversation et les informations du VIP.')
+    await db.log('vip_request_recorded', telegram_id=m.from_user.id, data={'provider': provider, 'media_count': n})
+
+    await m.answer(
+        "✅ Informations reçues.\n\n"
+        "🎟 Vérification VIP\n\n"
+        "Pour finaliser la vérification, contactez directement @op75x15 afin de réaliser une extraction.\n\n"
+        f"VIP indiqué : {provider}\n"
+        f"Médias annoncés : {n}\n\n"
+        "C'est trop long ? Vous pouvez aussi rejoindre immédiatement via l'accès premium.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='💰 Accès premium (25€)', callback_data='premium:access')],
+            [InlineKeyboardButton(text='⬅️ Retour', callback_data='profile:none')],
+        ])
+    )
     await state.clear()
 
 
 @router.callback_query(F.data.startswith('vipdec:'))
-async def vip_decision(c: CallbackQuery):
+async def vip_decision_disabled(c: CallbackQuery):
+    # Ancien système VIP désactivé : il n'y a plus de validation VIP dans le bot.
     if not is_admin(c.from_user.id):
         await c.answer('Admin uniquement', show_alert=True)
         return
-    _, action, user_id = c.data.split(':')
-    user_id = int(user_id)
-    current_status = await db.fetchval('SELECT status FROM users WHERE telegram_id=$1', user_id)
-    if current_status not in {'vip_waiting', 'vip_provider_waiting', 'vip_media_count_waiting'}:
-        await c.answer('Demande VIP déjà traitée ou inactive.', show_alert=True)
-        await safe_mark_admin_message(c, f'ℹ️ Déjà traité : {current_status}')
-        return
-    if action == 'approve':
-        await grant_premium_access(user_id, status='vip_validated')
-        await safe_mark_admin_message(c, '✅ VIP validé')
-        await c.answer('VIP validé.', show_alert=True)
-    elif action == 'reject':
-        await db.execute("UPDATE users SET status='vip_rejected', updated_at=now() WHERE telegram_id=$1", user_id)
-        try:
-            await bot.send_message(user_id, '❌ Votre demande VIP a été refusée. Vous pouvez demander un accès premium si cette option est disponible.', reply_markup=no_content_kb())
-        except Exception:
-            pass
-        await safe_mark_admin_message(c, '❌ VIP refusé')
-        await c.answer('VIP refusé.')
-    elif action == 'ban':
-        await ban_user(user_id, reason='vip_request_ban')
-        await safe_mark_admin_message(c, '🚫 Banni')
-        await c.answer('Banni.')
+    await safe_mark_admin_message(c, 'ℹ️ Ancien bouton VIP désactivé. Le VIP se traite hors bot via @op75x15.')
+    await c.answer('Le système VIP est maintenant hors bot.', show_alert=True)
 
 @router.callback_query(F.data == 'vip:continue')
 async def vip_continue(c: CallbackQuery):
-    await c.answer('Envoyez les informations demandées dans le bot.', show_alert=True)
+    await c.answer('Contactez @op75x15 pour la vérification VIP.', show_alert=True)
 
 # ---------- ADMIN PANEL ----------
 
@@ -1131,6 +1124,105 @@ async def vip_broadcast_confirm(c: CallbackQuery, state: FSMContext):
     )
     await c.answer()
 
+
+# ---------- RELANCES ADMIN ----------
+
+@router.callback_query(F.data == 'relaunch:half_pending')
+async def relaunch_half_pending(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer('Admin uniquement', show_alert=True)
+        return
+    targets = await db.fetch("""
+        SELECT telegram_id, username, half_required, half_media_count
+        FROM users
+        WHERE status='half_required'
+          AND COALESCE(free_relaunch_sent,false)=false
+          AND COALESCE(half_media_count,0) < COALESCE(half_required,1)
+          AND COALESCE(banned,false)=false
+        ORDER BY updated_at ASC
+        LIMIT 500
+    """)
+    if not targets:
+        await update_flow(c, '📣 Relance pré-validés\n\nAucun utilisateur à relancer.\n\nSoit tout le monde a déjà reçu la relance, soit personne n’est en attente de médias 50%.', reply_markup=moderation_menu_kb())
+        await c.answer()
+        return
+    sent, failed = 0, 0
+    failed_ids = []
+    for u in targets:
+        uid = int(u['telegram_id'])
+        required = u['half_required'] or 1
+        count = u['half_media_count'] or 0
+        try:
+            await bot.send_message(
+                uid,
+                f'📣 Rappel candidature\n\nVotre accès gratuit a été pré-validé, mais vous n’avez pas encore envoyé le minimum demandé.\n\nProgression actuelle : {count}/{required}\n\nEnvoyez vos médias directement ici au bot pour continuer la vérification.',
+            )
+            await db.execute('UPDATE users SET free_relaunch_sent=true, updated_at=now() WHERE telegram_id=$1', uid)
+            sent += 1
+        except Exception as e:
+            failed += 1
+            failed_ids.append(uid)
+            await db.log('half_pending_relaunch_failed', telegram_id=uid, data={'error': str(e)}, level='warning')
+        await asyncio.sleep(0.04)
+    await db.log('half_pending_relaunch_sent', telegram_id=c.from_user.id, data={'sent': sent, 'failed': failed, 'failed_ids': failed_ids[:30]})
+    await update_flow(c, f'📣 Relance pré-validés terminée.\n\nUtilisateurs concernés : {len(targets)}\n✅ Envoyés : {sent}\n❌ Échecs : {failed}', reply_markup=moderation_menu_kb())
+    await c.answer()
+
+
+@router.callback_query(F.data == 'relaunch:appeal_banned')
+async def relaunch_appeal_banned(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer('Admin uniquement', show_alert=True)
+        return
+    targets = await db.fetch("""
+        SELECT telegram_id, username, declared_total, status
+        FROM users
+        WHERE COALESCE(appeal_relaunch_sent,false)=false
+          AND COALESCE(declared_total,0) > 0
+          AND status IN ('failed_no_activity','failed_quota')
+        ORDER BY updated_at DESC
+        LIMIT 500
+    """)
+    if not targets:
+        await update_flow(c, '🧾 Appel bannis quota\n\nAucun utilisateur à contacter.\n\nSoit la relance a déjà été envoyée, soit il n’y a aucun échec quota/activité éligible.', reply_markup=moderation_menu_kb())
+        await c.answer()
+        return
+    sent, failed = 0, 0
+    failed_ids = []
+    for u in targets:
+        uid = int(u['telegram_id'])
+        declared = u['declared_total'] or 0
+        try:
+            await bot.send_message(
+                uid,
+                'Si vous pensez qu’il s’agit d’une erreur, vous pouvez demander un réexamen.\n\nPour être débanni de tous les groupes, vous devrez envoyer ici la totalité des médias déclarés.\n\nCette relance est unique.',
+                reply_markup=appeal_start_kb(),
+            )
+            await db.execute('UPDATE users SET appeal_relaunch_sent=true, appeal_required=$2, updated_at=now() WHERE telegram_id=$1', uid, declared)
+            sent += 1
+        except Exception as e:
+            failed += 1
+            failed_ids.append(uid)
+            await db.log('appeal_relaunch_failed', telegram_id=uid, data={'error': str(e)}, level='warning')
+        await asyncio.sleep(0.04)
+    await db.log('appeal_relaunch_sent', telegram_id=c.from_user.id, data={'sent': sent, 'failed': failed, 'failed_ids': failed_ids[:30]})
+    await update_flow(c, f'🧾 Relance appel terminée.\n\nUtilisateurs concernés : {len(targets)}\n✅ Envoyés : {sent}\n❌ Échecs : {failed}', reply_markup=moderation_menu_kb())
+    await c.answer()
+
+
+@router.callback_query(F.data == 'appeal:start')
+async def appeal_start(c: CallbackQuery, state: FSMContext):
+    row = await db.fetchrow('SELECT declared_total,appeal_relaunch_sent,appeal_media_count,appeal_required FROM users WHERE telegram_id=$1', c.from_user.id)
+    if not row or not row['appeal_relaunch_sent']:
+        await c.answer('Aucun réexamen disponible.', show_alert=True)
+        return
+    required = row['appeal_required'] or row['declared_total'] or 1
+    count = row['appeal_media_count'] or 0
+    await db.execute("UPDATE users SET status='appeal_required', banned=false, appeal_required=$2, updated_at=now() WHERE telegram_id=$1", c.from_user.id, required)
+    await update_flow(c, f'🧾 Réexamen ouvert\n\nEnvoyez ici la totalité de vos médias pour vérification.\n\nProgression : {count}/{required}\n\nLes doublons ne seront pas comptés.')
+    await state.clear()
+    await c.answer()
+
 # ---------- HALF UPLOAD / MAIN GROUP CONTRIBUTION ----------
 
 async def private_media_from_message(m: Message):
@@ -1142,6 +1234,86 @@ async def private_media_from_message(m: Message):
     if m.document and (m.document.mime_type or '').startswith(('image/', 'video/')):
         return 'document', m.document.file_id, m.document.file_unique_id
     return None, None, None
+
+
+@router.message(F.chat.type == 'private')
+async def appeal_upload_private(m: Message):
+    if m.from_user and is_admin(m.from_user.id):
+        return
+    row = await db.fetchrow('SELECT status,appeal_required,appeal_media_count,username FROM users WHERE telegram_id=$1', m.from_user.id)
+    if not row or row['status'] != 'appeal_required':
+        return
+    media_type, file_id, unique_id = await private_media_from_message(m)
+    if not media_type:
+        await m.answer('Merci d’envoyer uniquement des médias pour le réexamen.')
+        return
+    exists = await db.fetchval('SELECT id FROM appeal_media WHERE telegram_id=$1 AND file_unique_id=$2', m.from_user.id, unique_id)
+    if exists:
+        await m.answer('Ce média a déjà été reçu et ne sera pas recompté.')
+        return
+    await db.execute('INSERT INTO appeal_media(telegram_id,file_id,file_unique_id,media_type,source_message_id) VALUES($1,$2,$3,$4,$5)', m.from_user.id, file_id, unique_id, media_type, m.message_id)
+    await db.execute('UPDATE users SET appeal_media_count=appeal_media_count+1, updated_at=now() WHERE telegram_id=$1', m.from_user.id)
+    count = await db.fetchval('SELECT appeal_media_count FROM users WHERE telegram_id=$1', m.from_user.id) or 0
+    required = row['appeal_required'] or 1
+    caption = f"🧾 Média réexamen déban\n\n👤 @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\nProgression : {count}/{required}"
+    for aid in config.admin_ids:
+        try:
+            await bot.copy_message(chat_id=aid, from_chat_id=m.chat.id, message_id=m.message_id, caption=caption)
+        except Exception as e:
+            await db.log('appeal_media_send_admin_failed', telegram_id=m.from_user.id, data={'admin_id': aid, 'error': str(e)}, level='warning')
+    if count >= required:
+        await db.execute("UPDATE users SET status='appeal_review_pending', updated_at=now() WHERE telegram_id=$1", m.from_user.id)
+        await m.answer('✅ Tous les médias demandés ont été reçus.\n\nLes admins vont vérifier votre demande de réexamen.')
+        for aid in config.admin_ids:
+            try:
+                await bot.send_message(aid, f"🧾 Réexamen prêt\n\n👤 @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\nDéclaré : {required}\nReçu : {count}\n\nDécision admin requise.", reply_markup=admin_appeal_kb(m.from_user.id))
+            except Exception:
+                pass
+    else:
+        await m.answer(f'✅ Média reçu. Progression : {count}/{required}')
+
+
+@router.callback_query(F.data.startswith('appeal:'))
+async def appeal_decision(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer('Admin uniquement', show_alert=True)
+        return
+    _, action, user_id = c.data.split(':')
+    user_id = int(user_id)
+    current_status = await db.fetchval('SELECT status FROM users WHERE telegram_id=$1', user_id)
+    if current_status != 'appeal_review_pending':
+        await c.answer('Réexamen déjà traité ou inactif.', show_alert=True)
+        await safe_mark_admin_message(c, f'ℹ️ Déjà traité : {current_status}')
+        return
+    if action == 'approve':
+        ok, failed, errors = await unban_user_from_configured_groups(user_id)
+        await db.execute("UPDATE users SET status='member_validated', banned=false, updated_at=now() WHERE telegram_id=$1", user_id)
+        link = None
+        try:
+            link = await create_main_invite_for_user(user_id, hours=24)
+        except Exception as e:
+            await db.log('appeal_invite_failed', telegram_id=user_id, data={'error': str(e)}, level='error')
+        try:
+            if link:
+                await bot.send_message(user_id, f'✅ Votre demande de réexamen a été acceptée.\n\nVous avez été débanni des groupes configurés. Voici un nouveau lien personnel valable 24h.', reply_markup=url_kb('🔗 Rejoindre le groupe principal', link))
+            else:
+                await bot.send_message(user_id, '✅ Votre demande de réexamen a été acceptée.\n\nVous avez été débanni des groupes configurés. Un admin vous renverra le lien du groupe principal.')
+        except Exception:
+            pass
+        await safe_mark_admin_message(c, f'✅ Appel accepté\n\nDébans OK : {ok}\nÉchecs : {failed}')
+        await c.answer('Appel accepté')
+    elif action == 'reject':
+        await db.execute("UPDATE users SET status='appeal_rejected', banned=true, updated_at=now() WHERE telegram_id=$1", user_id)
+        try:
+            await bot.send_message(user_id, '❌ Votre demande de réexamen a été refusée.')
+        except Exception:
+            pass
+        await safe_mark_admin_message(c, '❌ Appel refusé')
+        await c.answer('Refusé')
+    elif action == 'ban':
+        await ban_user(user_id, reason='appeal_ban')
+        await safe_mark_admin_message(c, '🚫 Banni définitivement après appel')
+        await c.answer('Banni')
 
 @router.message(F.chat.type == 'private')
 async def half_upload_private(m: Message):
@@ -1256,6 +1428,40 @@ async def rules_done(c: CallbackQuery):
     except Exception as e:
         await update_flow(c, f'Erreur création lien. Vérifiez que le bot est admin du groupe principal.\n\n{e}')
     await c.answer()
+
+
+async def get_main_group_id() -> int | None:
+    main = await get_setting('main_group', '')
+    return int(main) if main else None
+
+async def unban_user_from_configured_groups(user_id: int):
+    rows = await db.fetch("SELECT chat_id,title,type FROM groups WHERE active=true AND type IN ('pub','main')")
+    ok, failed, errors = 0, 0, []
+    for r in rows:
+        try:
+            await bot.unban_chat_member(int(r['chat_id']), user_id, only_if_banned=True)
+            ok += 1
+        except Exception as e:
+            failed += 1
+            errors.append({'chat_id': int(r['chat_id']), 'title': r['title'], 'error': str(e)})
+            await db.log('appeal_unban_failed', telegram_id=user_id, chat_id=int(r['chat_id']), data={'error': str(e)}, level='warning')
+    return ok, failed, errors
+
+async def create_main_invite_for_user(user_id: int, hours: int = 24):
+    main = await get_main_group_id()
+    if not main:
+        return None
+    invite = await bot.create_chat_invite_link(
+        main,
+        member_limit=1,
+        expire_date=datetime.now(timezone.utc) + timedelta(hours=hours),
+        creates_join_request=False,
+    )
+    await db.execute(
+        'INSERT INTO invite_links(telegram_id,chat_id,invite_link,expected_user_id,expires_at) VALUES($1,$2,$3,$4,$5)',
+        user_id, main, invite.invite_link, user_id, datetime.now(timezone.utc)+timedelta(hours=hours),
+    )
+    return invite.invite_link
 
 # ---------- GROUP MODERATION / MEDIA COUNT ----------
 
@@ -1372,8 +1578,17 @@ async def handle_main_group_join(chat_id: int, member):
     u = await db.fetchrow('SELECT status,declared_total,attempts,banned FROM users WHERE telegram_id=$1', member.id)
     await db.log('main_group_join_detected', telegram_id=member.id, chat_id=chat_id, data={'status': u['status'] if u else None, 'banned': bool(u['banned']) if u else None})
 
-    if not u or u['banned'] or u['status'] not in {'validated', 'temporary_member', 'premium_validated', 'vip_validated'}:
+    allowed_statuses = {'validated', 'temporary_member', 'premium_validated', 'vip_validated', 'member_validated'}
+    if not u or u['banned'] or u['status'] not in allowed_statuses:
         await ban_from_chat(chat_id, member.id, 'ban_join_without_validation')
+        return
+
+    # Idempotence importante : Telegram peut déclencher à la fois new_chat_members
+    # et chat_member pour la même entrée. Si le premier handler a déjà transformé
+    # premium_validated/vip_validated en member_validated, le second ne doit jamais
+    # bannir la personne. Il ne fait rien.
+    if u['status'] == 'member_validated':
+        await db.log('main_group_join_already_validated_ignored', telegram_id=member.id, chat_id=chat_id)
         return
 
     if u['status'] in {'premium_validated', 'vip_validated'}:
@@ -1552,6 +1767,116 @@ async def group_messages(m: Message):
             await db.log('quota_completed', telegram_id=uid, chat_id=m.chat.id, data={'total': total, 'valid': valid})
 
 # ---------- PAYMENTS / MODERATION ----------
+
+
+@router.callback_query(F.data == 'premium:repair_victims')
+async def repair_premium_victims(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        return
+    main = await get_setting('main_group', '')
+    if not main:
+        await c.message.answer('❌ Groupe principal non configuré.', reply_markup=back_admin_kb())
+        await c.answer()
+        return
+    # Corrige les utilisateurs premium lésés par l’ancien bug : paiement validé
+    # mais utilisateur banni/blacklisté ou passé dans un statut d’échec quota.
+    rows = await db.fetch("""
+        SELECT DISTINCT u.telegram_id
+        FROM users u
+        JOIN payments p ON p.telegram_id = u.telegram_id
+        WHERE p.status='validated'
+          AND (
+            COALESCE(u.banned,false)=true
+            OR u.status IN ('failed_no_activity','failed_quota','left_access_lost','premium_payment_pending','premium_payment_rejected')
+            OR u.status NOT IN ('premium_validated','vip_validated','member_validated')
+          )
+        UNION
+        SELECT telegram_id
+        FROM users
+        WHERE COALESCE(banned,false)=true AND status IN ('premium_validated','vip_validated')
+    """)
+    if not rows:
+        await c.message.answer('✅ Aucun premium/VIP lésé à réparer.', reply_markup=back_admin_kb())
+        await c.answer()
+        return
+    concerned = len(rows)
+    unban_ok = 0
+    unban_failed = 0
+    links_sent = 0
+    send_failed = 0
+    failed_ids = []
+
+    await c.message.answer(
+        f'♻️ Réparation premium lancée.\n\n'
+        f'Utilisateurs concernés : {concerned}\n\n'
+        "Je débannis les comptes concernés du groupe principal et je renvoie un nouveau lien valable 48h."
+    )
+
+    for r in rows:
+        uid = int(r['telegram_id'])
+        try:
+            # Ici le unban est volontaire : il répare uniquement un ban erroné passé.
+            try:
+                await bot.unban_chat_member(chat_id=int(main), user_id=uid, only_if_banned=True)
+                unban_ok += 1
+            except Exception as e:
+                unban_failed += 1
+                await db.log('premium_repair_unban_failed', telegram_id=uid, chat_id=int(main), data={'error': str(e)}, level='warning')
+
+            await db.execute("""
+                UPDATE users
+                SET banned=false,
+                    status='premium_validated',
+                    joined_main_at=NULL,
+                    first_media_at=NULL,
+                    valid_media_count=0,
+                    updated_at=now()
+                WHERE telegram_id=$1
+            """, uid)
+            invite = await bot.create_chat_invite_link(
+                int(main),
+                member_limit=1,
+                expire_date=datetime.now(timezone.utc) + timedelta(hours=48),
+                creates_join_request=False,
+            )
+            await db.execute(
+                'INSERT INTO invite_links(telegram_id,chat_id,invite_link,expected_user_id,expires_at) VALUES($1,$2,$3,$4,$5)',
+                uid, int(main), invite.invite_link, uid, datetime.now(timezone.utc)+timedelta(hours=48)
+            )
+            try:
+                await bot.send_message(
+                    uid,
+                    '✅ Correction effectuée.\n\nVotre accès premium a été réactivé. Voici un nouveau lien personnel valable 48h.',
+                    reply_markup=url_kb('🔗 Rejoindre le groupe principal', invite.invite_link)
+                )
+                links_sent += 1
+                await db.log('premium_repaired_and_resent', telegram_id=uid, chat_id=int(main))
+            except Exception as e:
+                send_failed += 1
+                failed_ids.append(uid)
+                await db.log('premium_repair_link_send_failed', telegram_id=uid, chat_id=int(main), data={'error': str(e)}, level='error')
+        except Exception as e:
+            send_failed += 1
+            failed_ids.append(uid)
+            await db.log('premium_repair_failed', telegram_id=uid, chat_id=int(main), data={'error': str(e)}, level='error')
+
+    details = ''
+    if failed_ids:
+        details = '\n\nIDs en échec : ' + ', '.join(str(x) for x in failed_ids[:20])
+        if len(failed_ids) > 20:
+            details += f'… (+{len(failed_ids)-20})'
+
+    await c.message.answer(
+        '♻️ Réparation premium terminée.\n\n'
+        f'👥 Utilisateurs concernés : {concerned}\n'
+        f'✅ Débans réussis : {unban_ok}\n'
+        f'⚠️ Débans échoués : {unban_failed}\n'
+        f'🔗 Nouveaux liens envoyés : {links_sent}\n'
+        f'❌ Envois échoués : {send_failed}'
+        f'{details}',
+        reply_markup=back_admin_kb()
+    )
+    await c.answer()
 
 @router.callback_query(F.data == 'admin:payments')
 async def admin_payments(c: CallbackQuery):
@@ -1743,6 +2068,7 @@ async def monitor_members():
                             pass
                         await ban_from_chat(int(main), int(u['telegram_id']), reason='ban_main_quota_24h_failed')
                         await ban_user(int(u['telegram_id']), reason='ban_pub_quota_24h_failed')
+                        await db.execute("UPDATE users SET status='failed_quota', banned=true, updated_at=now() WHERE telegram_id=$1", u['telegram_id'])
             # Relance premium unique après 5h d’abandon du formulaire.
             abandoned = await db.fetch("""
                 SELECT telegram_id,status,updated_at

@@ -139,6 +139,9 @@ def moderation_menu_kb():
     return kb([
         [('📥 Candidatures en attente', 'admin:apps')],
         [('🎟 Broadcast VIP coupe-file', 'broadcast:vip_start')],
+        [('♻️ Réparer premium lésés', 'premium:repair_victims')],
+        [('📣 Relancer pré-validés', 'relaunch:half_pending')],
+        [('🧾 Appel bannis quota', 'relaunch:appeal_banned')],
         [('🚫 Blacklist', 'admin:blacklist')],
         [('🧾 Logs récents', 'admin:logs')],
         [('⬅️ Retour panel', 'admin:home')],
@@ -146,7 +149,7 @@ def moderation_menu_kb():
 
 def no_content_kb():
     return kb([
-        [('💰 Accès premium', 'premium:access')],
+        [('💰 Accès premium (25€)', 'premium:access')],
         [('🎟 Je possède un VIP', 'premium:vip')],
         [('⬅️ Retour', 'go:profile')],
     ])
@@ -161,7 +164,7 @@ def admin_payment_kb(payment_id: int, user_id: int):
     ])
 
 def vip_info_kb():
-    return kb([[('💳 Continuer', 'vip:continue')], [('⬅️ Retour', 'profile:none')]])
+    return kb([[('💰 Accès premium (25€)', 'premium:access')], [('⬅️ Retour', 'profile:none')]])
 
 
 def settings_menu_kb():
@@ -182,15 +185,24 @@ def half_review_kb(user_id: int):
 
 
 def admin_vip_kb(user_id: int):
-    return kb([
-        [('✅ Valider VIP', f'vipdec:approve:{user_id}')],
-        [('❌ Refuser VIP', f'vipdec:reject:{user_id}')],
-        [('🚫 Bannir', f'vipdec:ban:{user_id}')],
-    ])
+    # Ancien système désactivé : conservé pour éviter les imports cassés, plus utilisé.
+    return kb([[('ℹ️ VIP hors bot', f'vipdec:info:{user_id}')]])
 
 
 def broadcast_confirm_kb():
     return kb([
         [('✅ Envoyer broadcast', 'broadcast:vip_confirm')],
         [('❌ Annuler', 'broadcast:vip_cancel')],
+    ])
+
+
+def appeal_start_kb():
+    return kb([[('📤 Envoyer mes médias', 'appeal:start')]])
+
+
+def admin_appeal_kb(user_id: int):
+    return kb([
+        [('✅ Déban + nouveau lien', f'appeal:approve:{user_id}')],
+        [('❌ Refuser appel', f'appeal:reject:{user_id}')],
+        [('🚫 Bannir définitivement', f'appeal:ban:{user_id}')],
     ])
