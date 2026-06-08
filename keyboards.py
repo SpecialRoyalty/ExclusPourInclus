@@ -1,0 +1,208 @@
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+
+def kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=text, callback_data=data) for text, data in row]
+        for row in rows
+    ])
+
+
+def url_kb(text: str, url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, url=url)]])
+
+
+def start_kb():
+    return kb([[('✅ Je suis intéressé', 'start:interested')], [('❌ Pas intéressé', 'start:not_interested')]])
+
+def not_interested_kb():
+    return kb([[('💬 Donner un feedback', 'feedback:start')], [('⬅️ Retour', 'start:interested')]])
+
+
+def languages_kb():
+    return kb([
+        [('🇫🇷 Français', 'lang:fr'), ('🇬🇧 English', 'lang:en')],
+        [('🇪🇸 Español', 'lang:es'), ('🇮🇹 Italiano', 'lang:it')],
+        [('🇷🇺 Русский', 'lang:ru'), ('🇸🇦 عربي', 'lang:ar')],
+    ])
+
+
+def profile_kb():
+    return kb([
+        [('📦 Acheteur / Créateur', 'profile:supplier')],
+        [('💾 Amateur / Collectionneur', 'profile:collector')],
+        [('❌ Je n’ai pas de contenu', 'profile:none')],
+        [('⬅️ Retour', 'start:interested')],
+    ])
+
+
+def ok_kb(callback='ok'):
+    return kb([[('✅ J’ai compris', callback)], [('⬅️ Retour', 'go:profile')]])
+
+
+def continue_kb(callback='go:profile'):
+    return kb([[('➡ Continuer', callback)], [('⬅️ Retour', 'start:interested')]])
+
+
+def confirm_kb():
+    return kb([[('✅ Confirmer', 'quota:confirm')], [('✏️ Modifier', 'quota:edit')]])
+
+
+def rules_kb(next_id: int):
+    if next_id <= 4:
+        return kb([[('✅ J’ai compris', f'rule:{next_id}')]])
+    return kb([[('✅ J’ai compris', 'rules:done')]])
+
+
+def admin_panel_kb():
+    return kb([
+        [('📢 Publicité', 'admin:pub'), ('🖼 Images', 'admin:images')],
+        [('👥 Groupes', 'admin:groups'), ('💳 Paiements', 'admin:payments')],
+        [('📥 Modération', 'admin:moderation'), ('⚙️ Réglages', 'admin:settings')],
+        [('ℹ️ Info / Vérification', 'admin:info')],
+    ])
+
+
+def back_admin_kb():
+    return kb([[('⬅️ Retour panel', 'admin:home')]])
+
+
+def pub_menu_kb(auto_enabled: bool):
+    auto_label = '🟢 Auto pub : ON' if auto_enabled else '🔴 Auto pub : OFF'
+    return kb([
+        [('📢 Publier maintenant', 'pub:now')],
+        [(auto_label, 'pub:auto_toggle')],
+        [('⏱ Fréquence publicité', 'text:set:auto_pub_interval_minutes')],
+        [('👁 Voir groupes publicité', 'pub:targets')],
+        [('📝 Modifier texte pub', 'text:set:ad_text')],
+        [('⬅️ Retour panel', 'admin:home')],
+    ])
+
+
+def images_menu_kb():
+    return kb([
+        [('🖼 Image publicité', 'image:set:ad_image_file_id')],
+        [('👋 Image accueil bot', 'image:set:welcome_image_file_id')],
+        [('✅ Image exemple preuve', 'image:set:proof_example_image_file_id')],
+        [('👁 Prévisualiser images', 'image:preview')],
+        [('🗑 Supprimer image', 'image:delete_menu')],
+        [('⬅️ Retour panel', 'admin:home')],
+    ])
+
+
+def image_delete_kb():
+    return kb([
+        [('🗑 Pub', 'image:delete:ad_image_file_id'), ('🗑 Accueil', 'image:delete:welcome_image_file_id')],
+        [('🗑 Preuve', 'image:delete:proof_example_image_file_id')],
+        [('⬅️ Retour images', 'admin:images')],
+    ])
+
+
+def groups_menu_kb():
+    return kb([
+        [('🔎 Voir groupes détectés', 'group:list')],
+        [('⬅️ Retour panel', 'admin:home')],
+    ])
+
+
+def group_row_kb(chat_id: int, is_pub: bool, is_main: bool, targeted: bool):
+    rows = []
+    if not is_main:
+        rows.append([('⭐ Définir principal', f'group:set_main:{chat_id}')])
+    if is_pub:
+        rows.append([('➖ Retirer des pubs', f'group:remove_pub:{chat_id}')])
+        rows.append([(('☑ Ciblé pub' if targeted else '☐ Non ciblé'), f'group:toggle_target:{chat_id}')])
+    else:
+        rows.append([('➕ Définir comme pub', f'group:add_pub:{chat_id}')])
+    rows.append([('⬅️ Retour groupes', 'group:list')])
+    return kb(rows)
+
+
+def admin_application_kb(app_id: int, user_id: int):
+    return kb([
+        [('✅ Valider', f'app:approve:{app_id}:{user_id}'), ('❌ Refuser', f'app:reject:{app_id}:{user_id}')],
+        [('🚫 Bannir', f'app:ban:{app_id}:{user_id}')],
+    ])
+
+
+def payments_menu_kb():
+    return kb([
+        [('💵 Prix premium', 'text:set:premium_price')],
+        [('💸 PayPal', 'text:set:paypal_link')],
+        [('₮ USDT', 'text:set:usdt_address')],
+        [('📊 Statut paiements', 'payments:status')],
+        [('⬅️ Retour panel', 'admin:home')],
+    ])
+
+
+def moderation_menu_kb():
+    return kb([
+        [('📥 Candidatures en attente', 'admin:apps')],
+        [('🎟 Broadcast VIP coupe-file', 'broadcast:vip_start')],
+        [('♻️ Réparer premium lésés', 'premium:repair_victims')],
+        [('📣 Relancer pré-validés', 'relaunch:half_pending')],
+        [('🧾 Appel bannis quota', 'relaunch:appeal_banned')],
+        [('🚫 Blacklist', 'admin:blacklist')],
+        [('🧾 Logs récents', 'admin:logs')],
+        [('⬅️ Retour panel', 'admin:home')],
+    ])
+
+def no_content_kb():
+    return kb([
+        [('💰 Accès premium (25€)', 'premium:access')],
+        [('🎟 Je possède un VIP', 'premium:vip')],
+        [('⬅️ Retour', 'go:profile')],
+    ])
+
+def premium_info_kb():
+    return kb([[('📸 Envoyer preuve de paiement', 'premium:proof')], [('⬅️ Retour', 'profile:none')]])
+
+def admin_payment_kb(payment_id: int, user_id: int):
+    return kb([
+        [('✅ Valider paiement', f'pay:approve:{payment_id}:{user_id}')],
+        [('❌ Refuser paiement', f'pay:reject:{payment_id}:{user_id}')],
+    ])
+
+def vip_info_kb():
+    return kb([[('💰 Accès premium (25€)', 'premium:access')], [('⬅️ Retour', 'profile:none')]])
+
+
+def settings_menu_kb():
+    return kb([
+        [('⏱ Fréquence publicité', 'text:set:auto_pub_interval_minutes')],
+        [('⬅️ Retour panel', 'admin:home')],
+    ])
+
+
+def buyer_regular_kb():
+    return kb([[('✅ Oui', 'buyer:yes'), ('❌ Non', 'buyer:no')], [('⬅️ Retour', 'go:profile')]])
+
+def half_review_kb(user_id: int):
+    return kb([
+        [('✅ Cohérent', f'half:approve:{user_id}'), ('❌ Refuser', f'half:reject:{user_id}')],
+        [('🚫 Bannir', f'half:ban:{user_id}')],
+    ])
+
+
+def admin_vip_kb(user_id: int):
+    # Ancien système désactivé : conservé pour éviter les imports cassés, plus utilisé.
+    return kb([[('ℹ️ VIP hors bot', f'vipdec:info:{user_id}')]])
+
+
+def broadcast_confirm_kb():
+    return kb([
+        [('✅ Envoyer broadcast', 'broadcast:vip_confirm')],
+        [('❌ Annuler', 'broadcast:vip_cancel')],
+    ])
+
+
+def appeal_start_kb():
+    return kb([[('📤 Envoyer mes médias', 'appeal:start')]])
+
+
+def admin_appeal_kb(user_id: int):
+    return kb([
+        [('✅ Déban + nouveau lien', f'appeal:approve:{user_id}')],
+        [('❌ Refuser appel', f'appeal:reject:{user_id}')],
+        [('🚫 Bannir définitivement', f'appeal:ban:{user_id}')],
+    ])
