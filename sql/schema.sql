@@ -138,6 +138,24 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS half_media_count INT DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS half_required INT DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS left_access_lost_at TIMESTAMPTZ;
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS free_relaunch_sent BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_relaunch_sent BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_media_count INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_required INT DEFAULT 0;
+UPDATE settings SET value='25€' WHERE key='premium_price' AND (value='' OR value IS NULL);
+
+CREATE TABLE IF NOT EXISTS appeal_media (
+  id BIGSERIAL PRIMARY KEY,
+  telegram_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE,
+  file_id TEXT NOT NULL,
+  file_unique_id TEXT,
+  media_type TEXT,
+  source_message_id BIGINT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(telegram_id, file_unique_id)
+);
+
+
 -- Drop any old CHECK constraint on groups.type, even if PostgreSQL generated a different name.
 DO $$
 DECLARE r record;
@@ -166,7 +184,7 @@ INSERT INTO settings(key,value) VALUES
 ('auto_pub_enabled', '0'),
 ('auto_pub_interval_minutes', '10'),
 ('pot_balance', '0'),
-('premium_price', ''),
+('premium_price', '25€'),
 ('paypal_link', ''),
 ('usdt_address', '')
 ON CONFLICT(key) DO NOTHING;
