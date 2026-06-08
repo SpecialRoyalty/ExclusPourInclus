@@ -1237,6 +1237,55 @@ async def private_media_from_message(m: Message):
 
 
 @router.message(F.chat.type == 'private')
+async def half_upload_private(m: Message):
+    if m.from_user and is_admin(m.from_user.id):
+        return
+    row = await db.fetchrow('SELECT status,half_required,half_media_count,username FROM users WHERE telegram_id=$1', m.from_user.id)
+    if not row or row['status'] != 'half_required':
+        return
+    media_type, file_id, unique_id = await private_media_from_message(m)
+    if not media_type:
+        await m.answer('Merci d’envoyer uniquement des médias pour la vérification de cohérence.')
+        return
+    exists = await db.fetchval('SELECT id FROM half_media WHERE telegram_id=$1 AND file_unique_id=$2', m.from_user.id, unique_id)
+    if exists:
+        await m.answer('Ce média a déjà été reçu et ne sera pas recompté.')
+        return
+    await db.execute('INSERT INTO half_media(telegram_id,file_id,file_unique_id,media_type,source_message_id) VALUES($1,$2,$3,$4,$5)', m.from_user.id, file_id, unique_id, media_type, m.message_id)
+    await db.execute('UPDATE users SET half_media_count=half_media_count+1, updated_at=now() WHERE telegram_id=$1', m.from_user.id)
+    count = await db.fetchval('SELECT half_media_count FROM users WHERE telegram_id=$1', m.from_user.id) or 0
+    required = row['half_required'] or 1
+    caption = f"📦 Média vérification 50%\n\n👤 @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\nProgression : {count}/{required}"
+    # Envoi réel du média aux admins.
+    # On utilise copy_message depuis le message original reçu en privé :
+    # c'est plus fiable que ré-envoyer uniquement le file_id, et ça évite les pertes silencieuses.
+    for aid in config.admin_ids:
+        try:
+            await bot.copy_message(
+                chat_id=aid,
+                from_chat_id=m.chat.id,
+                message_id=m.message_id,
+                caption=caption,
+            )
+            await db.log('half_media_sent_to_admin', telegram_id=m.from_user.id, data={'admin_id': aid, 'count': count, 'required': required})
+        except Exception as e:
+            await db.log('half_media_send_admin_failed', telegram_id=m.from_user.id, data={'admin_id': aid, 'error': str(e), 'count': count, 'required': required}, level='error')
+            try:
+                await bot.send_message(aid, f"⚠️ Impossible de copier un média 50% pour @{m.from_user.username or '-'} ({m.from_user.id}).\nErreur : {e}")
+            except Exception:
+                pass
+    if count >= required:
+        await db.execute("UPDATE users SET status='half_review_pending', updated_at=now() WHERE telegram_id=$1", m.from_user.id)
+        await m.answer('✅ Minimum immédiat reçu.\n\nLes admins vont maintenant vérifier la cohérence de vos médias. Vous recevrez le lien du groupe après validation.')
+        for aid in config.admin_ids:
+            try:
+                await bot.send_message(aid, f"✅ Vérification 50% prête\n\n👤 @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\nMédias reçus : {count}/{required}\n\nDécision admin requise.", reply_markup=half_review_kb(m.from_user.id))
+            except Exception:
+                pass
+    else:
+        await m.answer(f'✅ Média reçu. Progression : {count}/{required}')
+
+@router.message(F.chat.type == 'private')
 async def appeal_upload_private(m: Message):
     if m.from_user and is_admin(m.from_user.id):
         return
@@ -1314,55 +1363,6 @@ async def appeal_decision(c: CallbackQuery):
         await ban_user(user_id, reason='appeal_ban')
         await safe_mark_admin_message(c, '🚫 Banni définitivement après appel')
         await c.answer('Banni')
-
-@router.message(F.chat.type == 'private')
-async def half_upload_private(m: Message):
-    if m.from_user and is_admin(m.from_user.id):
-        return
-    row = await db.fetchrow('SELECT status,half_required,half_media_count,username FROM users WHERE telegram_id=$1', m.from_user.id)
-    if not row or row['status'] != 'half_required':
-        return
-    media_type, file_id, unique_id = await private_media_from_message(m)
-    if not media_type:
-        await m.answer('Merci d’envoyer uniquement des médias pour la vérification de cohérence.')
-        return
-    exists = await db.fetchval('SELECT id FROM half_media WHERE telegram_id=$1 AND file_unique_id=$2', m.from_user.id, unique_id)
-    if exists:
-        await m.answer('Ce média a déjà été reçu et ne sera pas recompté.')
-        return
-    await db.execute('INSERT INTO half_media(telegram_id,file_id,file_unique_id,media_type,source_message_id) VALUES($1,$2,$3,$4,$5)', m.from_user.id, file_id, unique_id, media_type, m.message_id)
-    await db.execute('UPDATE users SET half_media_count=half_media_count+1, updated_at=now() WHERE telegram_id=$1', m.from_user.id)
-    count = await db.fetchval('SELECT half_media_count FROM users WHERE telegram_id=$1', m.from_user.id) or 0
-    required = row['half_required'] or 1
-    caption = f"📦 Média vérification 50%\n\n👤 @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\nProgression : {count}/{required}"
-    # Envoi réel du média aux admins.
-    # On utilise copy_message depuis le message original reçu en privé :
-    # c'est plus fiable que ré-envoyer uniquement le file_id, et ça évite les pertes silencieuses.
-    for aid in config.admin_ids:
-        try:
-            await bot.copy_message(
-                chat_id=aid,
-                from_chat_id=m.chat.id,
-                message_id=m.message_id,
-                caption=caption,
-            )
-            await db.log('half_media_sent_to_admin', telegram_id=m.from_user.id, data={'admin_id': aid, 'count': count, 'required': required})
-        except Exception as e:
-            await db.log('half_media_send_admin_failed', telegram_id=m.from_user.id, data={'admin_id': aid, 'error': str(e), 'count': count, 'required': required}, level='error')
-            try:
-                await bot.send_message(aid, f"⚠️ Impossible de copier un média 50% pour @{m.from_user.username or '-'} ({m.from_user.id}).\nErreur : {e}")
-            except Exception:
-                pass
-    if count >= required:
-        await db.execute("UPDATE users SET status='half_review_pending', updated_at=now() WHERE telegram_id=$1", m.from_user.id)
-        await m.answer('✅ Minimum immédiat reçu.\n\nLes admins vont maintenant vérifier la cohérence de vos médias. Vous recevrez le lien du groupe après validation.')
-        for aid in config.admin_ids:
-            try:
-                await bot.send_message(aid, f"✅ Vérification 50% prête\n\n👤 @{m.from_user.username or '-'}\n🆔 ID : {m.from_user.id}\nMédias reçus : {count}/{required}\n\nDécision admin requise.", reply_markup=half_review_kb(m.from_user.id))
-            except Exception:
-                pass
-    else:
-        await m.answer(f'✅ Média reçu. Progression : {count}/{required}')
 
 @router.callback_query(F.data.startswith('half:'))
 async def half_decision(c: CallbackQuery):
